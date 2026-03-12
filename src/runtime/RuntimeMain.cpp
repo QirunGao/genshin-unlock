@@ -196,9 +196,6 @@ static void RuntimeLoop(RuntimeContext& ctx) {
                         nextFov = ctx.config.fovPresets[i];
                         break;
                     }
-                    if (i == count - 1) {
-                        nextFov = ctx.config.fovPresets[0];
-                    }
                 }
                 ctx.config.targetFov = nextFov;
                 ctx.fovService.SetTargetFov(nextFov);
