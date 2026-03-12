@@ -6,14 +6,11 @@
 #include "runtime/FovService.hpp"
 #include "runtime/InputSampler.hpp"
 #include "runtime/LoggerProxy.hpp"
-#include "shared/ConfigModel.hpp"
 #include "shared/Protocol.hpp"
 #include "shared/VersionTable.hpp"
 #include "util/win/Loader.hpp"
 #include "util/win/Version.hpp"
-
-#include <wil/resource.h>
-#include <wil/result.h>
+#include "util/win/VirtualKey.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -22,16 +19,10 @@
 #include <ranges>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include <Windows.h>
 
 namespace z3lx::runtime {
-
-// File-scope persistent config for hot-reload
-static RuntimeConfig s_runtimeConfig {};
-static std::filesystem::path s_configFilePath {};
-static bool s_configDirty = false;
 
 struct RuntimeContext {
     RuntimeState state;
@@ -41,7 +32,7 @@ struct RuntimeContext {
     FovService fovService;
     InputSampler inputSampler;
     LoggerProxy logger;
-    ConfigSnapshotMessage configSnapshot;
+    ConfigSnapshotMessage config;
 };
 
 static void RuntimeLoop(RuntimeContext& ctx);
@@ -56,16 +47,18 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
     // Transition: Created -> HostValidated
     ctx.state.TransitionTo(State::HostValidated);
 
-    // Resolve addresses using version table
-    const auto versionTable = shared::MakeDefaultVersionTable();
+    // Apply configuration from launcher (no file I/O)
+    if (params) {
+        ctx.config = params->config;
+    }
 
-    // Read game version from config.ini near the game exe
-    const std::filesystem::path currentPath =
-        util::GetCurrentModuleFilePath().parent_path();
+    ctx.state.TransitionTo(State::ConfigReady);
+
+    // Resolve memory addresses using version table
+    const auto versionTable = shared::MakeDefaultVersionTable();
 
     util::Version gameVersion { 0, 0, 0, 0 };
     try {
-        // Try to find the game executable
         wchar_t exePath[MAX_PATH] {};
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
         const std::filesystem::path gamePath { exePath };
@@ -73,40 +66,46 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
             gamePath.parent_path() / "config.ini";
 
         if (std::filesystem::exists(configIni)) {
-            const wil::unique_hfile configFile =
-                wil::open_or_create_file(configIni.c_str());
-            std::string content;
-            content.resize(static_cast<size_t>(
-                std::filesystem::file_size(configIni)));
-            DWORD bytesRead = 0;
-            ReadFile(configFile.get(), content.data(),
-                static_cast<DWORD>(content.size()), &bytesRead, nullptr);
-            content.resize(bytesRead);
+            const HANDLE configFile = CreateFileW(configIni.c_str(),
+                GENERIC_READ, FILE_SHARE_READ, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (configFile != INVALID_HANDLE_VALUE) {
+                std::string content;
+                content.resize(static_cast<size_t>(
+                    std::filesystem::file_size(configIni)));
+                DWORD bytesRead = 0;
+                ReadFile(configFile, content.data(),
+                    static_cast<DWORD>(content.size()),
+                    &bytesRead, nullptr);
+                CloseHandle(configFile);
+                content.resize(bytesRead);
 
-            for (auto lineRange : std::views::split(content, '\n')) {
-                std::string_view line { lineRange };
-                auto sep = std::ranges::find(line, '=');
-                if (sep == line.end()) continue;
-                std::string_view key { line.begin(), sep };
-                std::string_view value { sep + 1, line.end() };
-                // trim whitespace
-                while (!key.empty() && key.front() == ' ') key.remove_prefix(1);
-                while (!key.empty() && key.back() == ' ') key.remove_suffix(1);
-                while (!value.empty() && value.front() == ' ') value.remove_prefix(1);
-                while (!value.empty() && value.back() == ' ') value.remove_suffix(1);
-                if (key == "game_version") {
-                    gameVersion = util::Version { value };
-                    break;
+                for (auto lineRange :
+                     std::views::split(content, '\n')) {
+                    std::string_view line { lineRange };
+                    auto sep = std::ranges::find(line, '=');
+                    if (sep == line.end()) continue;
+                    std::string_view key { line.begin(), sep };
+                    std::string_view value { sep + 1, line.end() };
+                    while (!key.empty() && key.front() == ' ')
+                        key.remove_prefix(1);
+                    while (!key.empty() && key.back() == ' ')
+                        key.remove_suffix(1);
+                    while (!value.empty() && value.front() == ' ')
+                        value.remove_prefix(1);
+                    while (!value.empty() && value.back() == ' ')
+                        value.remove_suffix(1);
+                    if (key == "game_version") {
+                        gameVersion = util::Version { value };
+                        break;
+                    }
                 }
             }
         }
     } catch (...) {
-        ctx.logger.Warn("Failed to read game version");
+        ctx.logger.Warn("Failed to read game version from config.ini");
     }
 
-    ctx.state.TransitionTo(State::ConfigReady);
-
-    // Resolve memory addresses
     const auto resolveStatus = ctx.resolver.Resolve(versionTable, gameVersion);
     if (resolveStatus == StatusCode::Ok) {
         ctx.state.TransitionTo(State::SymbolsResolved);
@@ -126,28 +125,35 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
 
     // Initialize FPS service
     if (addresses->fpsAddress) {
-        const auto fpsStatus = ctx.fpsService.Initialize(addresses->fpsAddress);
+        const auto fpsStatus = ctx.fpsService.Initialize(
+            addresses->fpsAddress);
         result.fpsAvailable = (fpsStatus == StatusCode::Ok);
+        if (result.fpsAvailable) {
+            ctx.hookManager.RegisterHook("FpsUnlock");
+            ctx.hookManager.SetHookState("FpsUnlock", true, true);
+        }
     }
 
     // Initialize FOV service
     if (addresses->fovTarget) {
-        const auto fovStatus = ctx.fovService.Initialize(addresses->fovTarget);
+        const auto fovStatus = ctx.fovService.Initialize(
+            addresses->fovTarget);
         result.fovAvailable = (fovStatus == StatusCode::Ok);
+        if (result.fovAvailable) {
+            ctx.hookManager.RegisterHook("FovUnlock");
+            ctx.hookManager.SetHookState("FovUnlock", true, true);
+        }
     }
 
     ctx.state.TransitionTo(State::HooksInstalled);
 
-    // Apply initial config if provided
-    if (params) {
-        ctx.configSnapshot = params->config;
-        ctx.fpsService.SetEnabled(ctx.configSnapshot.unlockFps);
-        ctx.fpsService.SetTargetFps(ctx.configSnapshot.targetFps);
-        ctx.fpsService.SetAutoThrottle(ctx.configSnapshot.autoThrottle);
-        ctx.fovService.SetEnabled(ctx.configSnapshot.unlockFov);
-        ctx.fovService.SetTargetFov(ctx.configSnapshot.targetFov);
-        ctx.fovService.SetSmoothing(ctx.configSnapshot.fovSmoothing);
-    }
+    // Apply initial config from snapshot
+    ctx.fpsService.SetEnabled(ctx.config.unlockFps != 0);
+    ctx.fpsService.SetTargetFps(ctx.config.targetFps);
+    ctx.fpsService.SetAutoThrottle(ctx.config.autoThrottle != 0);
+    ctx.fovService.SetEnabled(ctx.config.unlockFov != 0);
+    ctx.fovService.SetTargetFov(ctx.config.targetFov);
+    ctx.fovService.SetSmoothing(ctx.config.fovSmoothing);
 
     ctx.state.TransitionTo(State::Running);
     ctx.logger.Info("Runtime initialized successfully");
@@ -163,93 +169,63 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
 }
 
 static void RuntimeLoop(RuntimeContext& ctx) {
-    // Read persistent config file for hot-reload
-    const std::filesystem::path currentPath =
-        util::GetCurrentModuleFilePath().parent_path();
-    s_configFilePath = currentPath / "runtime_config.json";
-
-    try {
-        std::vector<uint8_t> buffer;
-        if (std::filesystem::exists(s_configFilePath)) {
-            const wil::unique_hfile configFile = wil::open_or_create_file(
-                s_configFilePath.c_str());
-            LARGE_INTEGER fileSize {};
-            GetFileSizeEx(configFile.get(), &fileSize);
-            buffer.resize(static_cast<size_t>(fileSize.QuadPart));
-            DWORD bytesRead = 0;
-            ReadFile(configFile.get(), buffer.data(),
-                static_cast<DWORD>(buffer.size()), &bytesRead, nullptr);
-            buffer.resize(bytesRead);
-            s_runtimeConfig.Deserialize(buffer);
-        }
-    } catch (...) {}
+    using VK = util::VirtualKey;
+    const auto unlockFovKey = static_cast<VK>(ctx.config.unlockFovKey);
+    const auto nextPresetKey = static_cast<VK>(ctx.config.nextFovPresetKey);
+    const auto prevPresetKey = static_cast<VK>(ctx.config.prevFovPresetKey);
 
     while (!ctx.state.IsTerminal()) {
-        // Sample input
         ctx.inputSampler.Sample();
 
-        // Apply runtime config
-        ctx.fpsService.SetEnabled(s_runtimeConfig.unlockFps);
-        ctx.fpsService.SetTargetFps(s_runtimeConfig.targetFps);
-        ctx.fpsService.SetAutoThrottle(s_runtimeConfig.autoThrottle);
+        // Apply FPS config (continuous from snapshot)
+        ctx.fpsService.Update();
 
-        // Handle FOV key bindings
-        if (ctx.inputSampler.IsKeyDown(s_runtimeConfig.unlockFovKey)) {
-            s_runtimeConfig.unlockFov = !s_runtimeConfig.unlockFov;
-            s_configDirty = true;
-        } else if (s_runtimeConfig.unlockFov) {
-            if (ctx.inputSampler.IsKeyDown(s_runtimeConfig.nextFovPresetKey)) {
-                const auto& presets = s_runtimeConfig.fovPresets;
-                const auto it = std::ranges::find_if(
-                    presets,
-                    [&](const int p) { return s_runtimeConfig.targetFov < p; }
-                );
-                s_runtimeConfig.targetFov =
-                    (it != presets.end()) ? *it : presets.front();
-                s_configDirty = true;
-            } else if (ctx.inputSampler.IsKeyDown(s_runtimeConfig.prevFovPresetKey)) {
-                const auto& presets = s_runtimeConfig.fovPresets;
-                int prevFov = presets.back();
-                for (auto rit = presets.rbegin(); rit != presets.rend(); ++rit) {
-                    if (*rit < s_runtimeConfig.targetFov) {
-                        prevFov = *rit;
+        // Handle FOV key bindings (in-memory only, no file I/O)
+        if (ctx.inputSampler.IsKeyDown(unlockFovKey)) {
+            const bool nowEnabled = !(ctx.config.unlockFov != 0);
+            ctx.config.unlockFov = nowEnabled ? 1u : 0u;
+            ctx.fovService.SetEnabled(nowEnabled);
+        } else if (ctx.config.unlockFov != 0) {
+            if (ctx.inputSampler.IsKeyDown(nextPresetKey) &&
+                ctx.config.fovPresetCount > 0) {
+                const auto count =
+                    static_cast<int32_t>(ctx.config.fovPresetCount);
+                int32_t nextFov = ctx.config.fovPresets[0];
+                for (int32_t i = 0; i < count; ++i) {
+                    if (ctx.config.fovPresets[i] > ctx.config.targetFov) {
+                        nextFov = ctx.config.fovPresets[i];
+                        break;
+                    }
+                    if (i == count - 1) {
+                        nextFov = ctx.config.fovPresets[0];
+                    }
+                }
+                ctx.config.targetFov = nextFov;
+                ctx.fovService.SetTargetFov(nextFov);
+            } else if (ctx.inputSampler.IsKeyDown(prevPresetKey) &&
+                       ctx.config.fovPresetCount > 0) {
+                const auto count =
+                    static_cast<int32_t>(ctx.config.fovPresetCount);
+                int32_t prevFov = ctx.config.fovPresets[count - 1];
+                for (int32_t i = count - 1; i >= 0; --i) {
+                    if (ctx.config.fovPresets[i] < ctx.config.targetFov) {
+                        prevFov = ctx.config.fovPresets[i];
                         break;
                     }
                 }
-                s_runtimeConfig.targetFov = prevFov;
-                s_configDirty = true;
+                ctx.config.targetFov = prevFov;
+                ctx.fovService.SetTargetFov(prevFov);
             }
         }
 
-        ctx.fovService.SetEnabled(s_runtimeConfig.unlockFov);
-        ctx.fovService.SetTargetFov(s_runtimeConfig.targetFov);
-        ctx.fovService.SetSmoothing(s_runtimeConfig.fovSmoothing);
-
-        // Update services
-        ctx.fpsService.Update();
         ctx.fovService.Update();
 
-        // Save config if changed
-        if (s_configDirty) {
-            s_configDirty = false;
-            try {
-                std::vector<uint8_t> buffer;
-                s_runtimeConfig.Serialize(buffer);
-                const wil::unique_hfile configFile = wil::open_or_create_file(
-                    s_configFilePath.c_str());
-                SetFilePointerEx(configFile.get(), {}, nullptr, FILE_BEGIN);
-                SetEndOfFile(configFile.get());
-                DWORD written = 0;
-                WriteFile(configFile.get(), buffer.data(),
-                    static_cast<DWORD>(buffer.size()), &written, nullptr);
-            } catch (...) {}
-        }
-
-        // Tick at 60Hz
-        using Milliseconds = std::chrono::duration<double, std::milli>;
-        const Milliseconds duration { 1000.0 / 60 };
-        std::this_thread::sleep_for(duration);
+        // Tick at ~60 Hz
+        std::this_thread::sleep_for(
+            std::chrono::duration<double, std::milli>(1000.0 / 60));
     }
 }
+
+} // namespace z3lx::runtime
 
 } // namespace z3lx::runtime

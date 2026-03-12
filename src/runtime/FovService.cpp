@@ -11,10 +11,10 @@
 import mmh;
 
 namespace {
-// Global state for the FOV hook callback
-std::mutex g_fovMutex {};
+// Singleton bridge: the static hook callback forwards to this instance.
+z3lx::runtime::FovService* g_activeService = nullptr;
 mmh::Hook<void, void*, float> g_fovHook {};
-z3lx::runtime::FovRuntimeState g_fovState {};
+std::mutex g_hookMutex {};
 
 void HkSetFieldOfView(void* instance, float value) noexcept;
 } // namespace
@@ -24,8 +24,9 @@ namespace z3lx::runtime {
 FovService::FovService() noexcept = default;
 
 FovService::~FovService() noexcept {
-    std::lock_guard lock { g_fovMutex };
+    std::lock_guard lock { g_hookMutex };
     g_fovHook = {};
+    g_activeService = nullptr;
 }
 
 StatusCode FovService::Initialize(void* fovTarget) {
@@ -35,36 +36,31 @@ StatusCode FovService::Initialize(void* fovTarget) {
 
     const auto detour = reinterpret_cast<void*>(HkSetFieldOfView);
 
-    std::lock_guard lock { g_fovMutex };
+    std::lock_guard lock { g_hookMutex };
     g_fovHook = mmh::Hook<void, void*, float>::Create(fovTarget, detour);
+    g_activeService = this;
     available = true;
     return StatusCode::Ok;
 }
 
 void FovService::SetEnabled(const bool enable) noexcept {
-    std::lock_guard lock { g_fovMutex };
-    g_fovState.enabled = enable;
+    std::lock_guard lock { mutex };
+    enabled = enable;
 }
 
 void FovService::SetTargetFov(const int fov) noexcept {
-    std::lock_guard lock { g_fovMutex };
-    g_fovState.targetFov = fov;
+    std::lock_guard lock { mutex };
+    targetFov = fov;
 }
 
 void FovService::SetSmoothing(const float smoothing) noexcept {
-    std::lock_guard lock { g_fovMutex };
-    g_fovState.filter.SetTimeConstant(smoothing);
-}
-
-void FovService::SetHooked(const bool hooked) noexcept {
-    std::lock_guard lock { g_fovMutex };
-    g_fovState.hooked = hooked;
+    std::lock_guard lock { mutex };
+    filter.SetTimeConstant(smoothing);
 }
 
 void FovService::Update() noexcept {
     if (!available) return;
 
-    // Check window focus and cursor visibility to decide hook state
     const HWND foregroundWindow = GetForegroundWindow();
     bool isFocused = false;
     if (foregroundWindow) {
@@ -81,20 +77,63 @@ void FovService::Update() noexcept {
 
     const bool shouldHook = isFocused && !cursorVisible;
 
-    std::lock_guard lock { g_fovMutex };
-    if (shouldHook && !g_fovState.hooked) {
+    std::lock_guard lock { g_hookMutex };
+    if (shouldHook && !hooked) {
         if (g_fovHook.IsCreated()) {
             g_fovHook.Enable(true);
-            g_fovState.enabledOnce = true;
+            enabledOnce = true;
         }
-        g_fovState.hooked = true;
-    } else if (!shouldHook && g_fovState.hooked) {
-        g_fovState.hooked = false;
+        hooked = true;
+    } else if (!shouldHook && hooked) {
+        hooked = false;
+    }
+}
+
+void FovService::HandleHookCallback(
+    void* instance, float& value) noexcept {
+    // Called under g_hookMutex from the trampoline
+    ++setFovCount;
+
+    if (const bool isDefaultFov = value == 45.0f;
+        instance == previousInstance &&
+        (value == previousFov || isDefaultFov)) {
+        if (isDefaultFov) {
+            previousInstance = instance;
+            previousFov = value;
+        }
+
+        if (setFovCount > 8) {
+            filter.SetInitialValue(value);
+        }
+        setFovCount = 0;
+
+        if (enabledOnce) {
+            enabledOnce = false;
+            filter.Update(value);
+        }
+        const float target = (hooked && enabled)
+            ? static_cast<float>(targetFov)
+            : previousFov;
+        const float filtered = filter.Update(target);
+
+        if ((hooked && enabled) || !isPreviousFov) {
+            isPreviousFov =
+                std::abs(previousFov - filtered) < 0.1f;
+            value = filtered;
+        } else if (!hooked) {
+            isPreviousFov = false;
+            g_fovHook.Enable(false);
+        }
+    } else {
+        const auto rep = std::bit_cast<std::uint32_t>(value);
+        value = std::bit_cast<float>(rep + 1);
+        previousInstance = instance;
+        previousFov = value;
     }
 }
 
 bool FovService::IsEnabled() const noexcept {
-    return g_fovState.enabled;
+    return enabled;
 }
 
 bool FovService::IsAvailable() const noexcept {
@@ -102,60 +141,23 @@ bool FovService::IsAvailable() const noexcept {
 }
 
 bool FovService::IsHooked() const noexcept {
-    return g_fovState.hooked;
+    return hooked;
 }
 
 int FovService::GetTargetFov() const noexcept {
-    return g_fovState.targetFov;
+    return targetFov;
 }
 
 } // namespace z3lx::runtime
 
 namespace {
 void HkSetFieldOfView(void* instance, float value) noexcept try {
-    std::lock_guard lock { g_fovMutex };
-    if (!g_fovHook.IsCreated()) {
+    std::lock_guard lock { g_hookMutex };
+    if (!g_fovHook.IsCreated() || !g_activeService) {
         return;
     }
 
-    auto& st = g_fovState;
-    ++st.setFovCount;
-
-    if (const bool isDefaultFov = value == 45.0f;
-        instance == st.previousInstance &&
-        (value == st.previousFov || isDefaultFov)) {
-        if (isDefaultFov) {
-            st.previousInstance = instance;
-            st.previousFov = value;
-        }
-
-        if (st.setFovCount > 8) {
-            st.filter.SetInitialValue(value);
-        }
-        st.setFovCount = 0;
-
-        if (st.enabledOnce) {
-            st.enabledOnce = false;
-            st.filter.Update(value);
-        }
-        const float target = (st.hooked && st.enabled) ?
-            static_cast<float>(st.targetFov) : st.previousFov;
-        const float filtered = st.filter.Update(target);
-
-        if ((st.hooked && st.enabled) || !st.isPreviousFov) {
-            st.isPreviousFov = std::abs(st.previousFov - filtered) < 0.1f;
-            value = filtered;
-        } else if (!st.hooked) {
-            st.isPreviousFov = false;
-            g_fovHook.Enable(false);
-        }
-    } else {
-        const auto rep = std::bit_cast<std::uint32_t>(value);
-        value = std::bit_cast<float>(rep + 1); // marker value
-        st.previousInstance = instance;
-        st.previousFov = value;
-    }
-
+    g_activeService->HandleHookCallback(instance, value);
     g_fovHook.CallOriginal(instance, value);
 } catch (...) {
     g_fovHook.CallOriginal(instance, value);

@@ -10,20 +10,6 @@ namespace z3lx::runtime {
 
 using namespace z3lx::shared;
 
-struct FovRuntimeState {
-    int targetFov = 45;
-    bool enabled = false;
-    bool enabledOnce = false;
-    bool hooked = false;
-
-    int setFovCount = 0;
-    void* previousInstance = nullptr;
-    float previousFov = 45.0f;
-    bool isPreviousFov = false;
-
-    util::ExponentialFilter<float> filter {};
-};
-
 class FovService {
 public:
     FovService() noexcept;
@@ -34,7 +20,6 @@ public:
     void SetEnabled(bool enabled) noexcept;
     void SetTargetFov(int fov) noexcept;
     void SetSmoothing(float smoothing) noexcept;
-    void SetHooked(bool hooked) noexcept;
 
     void Update() noexcept;
 
@@ -43,10 +28,23 @@ public:
     [[nodiscard]] bool IsHooked() const noexcept;
     [[nodiscard]] int GetTargetFov() const noexcept;
 
+    // Called from the hook callback — not part of the public API
+    void HandleHookCallback(void* instance, float& value) noexcept;
+
 private:
     bool available = false;
+    bool enabled = false;
+    bool hooked = false;
+    bool enabledOnce = false;
+    int targetFov = 45;
+
+    int setFovCount = 0;
+    void* previousInstance = nullptr;
+    float previousFov = 45.0f;
+    bool isPreviousFov = false;
+
+    util::ExponentialFilter<float> filter {};
     std::mutex mutex;
-    FovRuntimeState state;
 };
 
 } // namespace z3lx::runtime

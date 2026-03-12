@@ -29,6 +29,14 @@ public:
     ~HookManager() noexcept;
 
     StatusCode Register(const HookDefinition& definition);
+
+    // Convenience: register a named hook with no target/detour (state-only)
+    StatusCode RegisterHook(const std::string& name);
+
+    // Convenience: set installed/enabled state directly
+    StatusCode SetHookState(const std::string& name,
+        bool installed, bool enabled);
+
     StatusCode InstallAll();
     StatusCode UninstallAll();
 

@@ -22,6 +22,24 @@ StatusCode HookManager::Register(const HookDefinition& definition) {
     return StatusCode::Ok;
 }
 
+StatusCode HookManager::RegisterHook(const std::string& name) {
+    return Register(HookDefinition { .name = name });
+}
+
+StatusCode HookManager::SetHookState(const std::string& name,
+    const bool installed, const bool enabled) {
+    auto it = std::ranges::find_if(hooks,
+        [&](const HookEntry& e) { return e.definition.name == name; });
+    if (it == hooks.end()) return StatusCode::HookInstallFailed;
+
+    it->installed = installed;
+    it->enabled = enabled;
+    if (stateChangeCallback) {
+        stateChangeCallback(name, installed, enabled);
+    }
+    return StatusCode::Ok;
+}
+
 StatusCode HookManager::InstallAll() {
     for (auto& entry : hooks) {
         if (!entry.installed && entry.definition.target && entry.definition.detour) {

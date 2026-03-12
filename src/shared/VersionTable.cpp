@@ -11,18 +11,27 @@ VersionTable::~VersionTable() noexcept = default;
 bool VersionTable::IsSupported(const util::Version& gameVersion) const noexcept {
     return std::ranges::any_of(entries,
         [&](const VersionEntry& e) {
-            return e.gameVersion.GetMajor() == gameVersion.GetMajor() &&
-                   e.gameVersion.GetMinor() == gameVersion.GetMinor();
+            return e.gameVersion == gameVersion;
         });
 }
 
 std::optional<ResolverProfile> VersionTable::GetProfile(
     const util::Version& gameVersion) const noexcept {
+    // First try exact match (major.minor.patch.build)
     auto it = std::ranges::find_if(entries,
         [&](const VersionEntry& e) {
-            return e.gameVersion.GetMajor() == gameVersion.GetMajor() &&
-                   e.gameVersion.GetMinor() == gameVersion.GetMinor();
+            return e.gameVersion == gameVersion;
         });
+
+    // Fallback to major.minor.patch match
+    if (it == entries.end()) {
+        it = std::ranges::find_if(entries,
+            [&](const VersionEntry& e) {
+                return e.gameVersion.GetMajor() == gameVersion.GetMajor() &&
+                       e.gameVersion.GetMinor() == gameVersion.GetMinor() &&
+                       e.gameVersion.GetPatch() == gameVersion.GetPatch();
+            });
+    }
     if (it == entries.end()) {
         return std::nullopt;
     }
