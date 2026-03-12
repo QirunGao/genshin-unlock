@@ -81,7 +81,41 @@ configure_file(
     @ONLY
 )
 
+# ── New-architecture resource configurations ──────────────────────────────────
+
+set(VER_FILETYPE "VFT_APP")
+set(VER_INTERNALNAME "launcher")
+set(VER_ORIGINALFILENAME "launcher.exe")
+set(VER_FILEDESCRIPTION "Genshin Impact Game Launcher")
+configure_file(
+    ${RESOURCES_DIR}/version.rc.in
+    ${RESOURCES_DIR}/launcher_version.rc
+    @ONLY
+)
+
+set(VER_FILETYPE "VFT_DLL")
+set(VER_INTERNALNAME "bootstrap")
+set(VER_ORIGINALFILENAME "bootstrap.dll")
+set(VER_FILEDESCRIPTION "Genshin Impact Bootstrap DLL")
+configure_file(
+    ${RESOURCES_DIR}/version.rc.in
+    ${RESOURCES_DIR}/bootstrap_version.rc
+    @ONLY
+)
+
+set(VER_FILETYPE "VFT_DLL")
+set(VER_INTERNALNAME "runtime")
+set(VER_ORIGINALFILENAME "runtime.dll")
+set(VER_FILEDESCRIPTION "Genshin Impact Runtime DLL")
+configure_file(
+    ${RESOURCES_DIR}/version.rc.in
+    ${RESOURCES_DIR}/runtime_version.rc
+    @ONLY
+)
+
 add_compile_definitions(WIN32_LEAN_AND_MEAN)
+
+# ── util (shared utility library) ────────────────────────────────────────────
 
 file(GLOB_RECURSE UTIL_SOURCES src/util/*)
 add_library(util STATIC ${UTIL_SOURCES})
@@ -90,6 +124,16 @@ target_link_libraries(util
     PRIVATE version.lib
     PUBLIC WIL::WIL
 )
+
+# ── shared (cross-component types and version whitelist) ─────────────────────
+
+add_library(shared STATIC
+    src/shared/Shared.cpp
+)
+target_include_directories(shared PUBLIC include)
+target_link_libraries(shared PUBLIC WIL::WIL)
+
+# ── Legacy targets (kept for reference; superseded by launcher/bootstrap/runtime) ──
 
 file(GLOB_RECURSE LOADER_SOURCES src/loader/*)
 set(LOADER_RESOURCE ${RESOURCES_DIR}/loader.rc)
@@ -112,5 +156,64 @@ target_link_libraries(plugin
     PRIVATE glaze::glaze
     PRIVATE mmh::mmh
     PRIVATE WIL::WIL
+    PRIVATE util
+)
+
+# ── launcher (new-architecture executable) ────────────────────────────────────
+
+set(LAUNCHER_SOURCES
+    src/launcher/AppConfig.cpp
+    src/launcher/GameLocator.cpp
+    src/launcher/HandshakeClient.cpp
+    src/launcher/Injector.cpp
+    src/launcher/Main.cpp
+    src/launcher/ProcessStarter.cpp
+    src/launcher/VersionPolicy.cpp
+)
+set(LAUNCHER_RESOURCE ${RESOURCES_DIR}/launcher.rc)
+add_executable(launcher ${LAUNCHER_SOURCES} ${LAUNCHER_RESOURCE})
+target_include_directories(launcher PRIVATE include)
+target_link_libraries(launcher
+    PRIVATE glaze::glaze
+    PRIVATE WIL::WIL
+    PRIVATE shared
+    PRIVATE util
+)
+target_link_options(launcher PRIVATE
+    /MANIFEST:NO
+)
+
+# ── bootstrap (injected DLL that loads runtime.dll) ──────────────────────────
+
+set(BOOTSTRAP_SOURCES
+    src/bootstrap/BootstrapCore.cpp
+    src/bootstrap/DllMain.cpp
+)
+set(BOOTSTRAP_RESOURCE ${RESOURCES_DIR}/bootstrap.rc)
+add_library(bootstrap SHARED ${BOOTSTRAP_SOURCES} ${BOOTSTRAP_RESOURCE})
+target_include_directories(bootstrap PRIVATE include)
+target_link_libraries(bootstrap
+    PRIVATE WIL::WIL
+    PRIVATE shared
+)
+
+# ── runtime (heavyweight game-modification DLL) ───────────────────────────────
+
+set(RUNTIME_SOURCES
+    src/runtime/FovService.cpp
+    src/runtime/FpsService.cpp
+    src/runtime/HookManager.cpp
+    src/runtime/InputSampler.cpp
+    src/runtime/MemoryResolver.cpp
+    src/runtime/RuntimeMain.cpp
+    src/runtime/RuntimeState.cpp
+)
+set(RUNTIME_RESOURCE ${RESOURCES_DIR}/runtime.rc)
+add_library(runtime SHARED ${RUNTIME_SOURCES} ${RUNTIME_RESOURCE})
+target_include_directories(runtime PRIVATE include)
+target_link_libraries(runtime
+    PRIVATE mmh::mmh
+    PRIVATE WIL::WIL
+    PRIVATE shared
     PRIVATE util
 )
