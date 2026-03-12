@@ -7,8 +7,33 @@
 #include <filesystem>
 
 #include <Windows.h>
+#include <TlHelp32.h>
 
 namespace z3lx::launcher {
+
+namespace {
+
+HMODULE FindRemoteModule(
+    const uint32_t processId, const wchar_t* moduleName) {
+    const wil::unique_handle snapshot {
+        CreateToolhelp32Snapshot(
+            TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId)
+    };
+    if (!snapshot) return nullptr;
+
+    MODULEENTRY32W entry { .dwSize = sizeof(entry) };
+    if (!Module32FirstW(snapshot.get(), &entry)) return nullptr;
+
+    do {
+        if (_wcsicmp(entry.szModule, moduleName) == 0) {
+            return reinterpret_cast<HMODULE>(entry.modBaseAddr);
+        }
+    } while (Module32NextW(snapshot.get(), &entry));
+
+    return nullptr;
+}
+
+} // namespace
 
 StatusCode InjectBootstrap(
     const HANDLE processHandle,
@@ -90,6 +115,58 @@ StatusCode InjectBootstrap(
     // Clean up the allocated buffer
     VirtualFreeEx(processHandle, buffer, 0, MEM_RELEASE);
 
+    return StatusCode::Ok;
+}
+
+StatusCode CallBootstrapEntry(
+    const HANDLE processHandle,
+    const uint32_t processId,
+    const std::filesystem::path& bootstrapPath) {
+    // Step 1: Find bootstrap.dll base in remote process
+    const HMODULE remoteBase = FindRemoteModule(
+        processId, bootstrapPath.filename().c_str());
+    if (!remoteBase) {
+        return StatusCode::BootstrapInitFailed;
+    }
+
+    // Step 2: Load bootstrap.dll locally to compute function offset
+    const HMODULE localModule = LoadLibraryW(bootstrapPath.c_str());
+    if (!localModule) {
+        return StatusCode::BootstrapInitFailed;
+    }
+
+    const auto localFunc = reinterpret_cast<uintptr_t>(
+        GetProcAddress(localModule, "BootstrapEntryPoint"));
+    const auto localBase = reinterpret_cast<uintptr_t>(localModule);
+    FreeLibrary(localModule);
+
+    if (!localFunc) {
+        return StatusCode::BootstrapInitFailed;
+    }
+
+    // Step 3: Calculate remote function address
+    const uintptr_t offset = localFunc - localBase;
+    const auto remoteFunc = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+        reinterpret_cast<uintptr_t>(remoteBase) + offset);
+
+    // Step 4: Create remote thread (non-blocking)
+    wil::unique_handle remoteThread {
+        CreateRemoteThread(
+            processHandle,
+            nullptr,
+            0,
+            remoteFunc,
+            nullptr,
+            0,
+            nullptr)
+    };
+    if (!remoteThread) {
+        return StatusCode::BootstrapInitFailed;
+    }
+
+    // Don't wait — the IPC handshake will synchronize
+    // The thread handle is released when unique_handle goes out of scope,
+    // but the remote thread continues running.
     return StatusCode::Ok;
 }
 
