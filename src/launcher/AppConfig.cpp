@@ -141,7 +141,7 @@ struct glz::meta<z3lx::shared::RuntimeConfig> {
         "Target FPS must be -1 or greater"
     >;
 
-    static constexpr auto isValidFov = [](const uint8_t fov) -> bool {
+    static constexpr auto isValidFov = [](const int fov) -> bool {
         return fov > 0 && fov < 180;
     };
     static constexpr auto fovConstraintCond = [](

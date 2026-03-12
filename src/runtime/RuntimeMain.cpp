@@ -209,12 +209,14 @@ static void RuntimeLoop(RuntimeContext& ctx) {
                 s_configDirty = true;
             } else if (ctx.inputSampler.IsKeyDown(s_runtimeConfig.prevFovPresetKey)) {
                 const auto& presets = s_runtimeConfig.fovPresets;
-                const auto it = std::ranges::find_if(
-                    presets | std::views::reverse,
-                    [&](const int p) { return s_runtimeConfig.targetFov > p; }
-                );
-                s_runtimeConfig.targetFov =
-                    (it != presets.rend()) ? *it : presets.back();
+                int prevFov = presets.back();
+                for (auto rit = presets.rbegin(); rit != presets.rend(); ++rit) {
+                    if (*rit < s_runtimeConfig.targetFov) {
+                        prevFov = *rit;
+                        break;
+                    }
+                }
+                s_runtimeConfig.targetFov = prevFov;
                 s_configDirty = true;
             }
         }

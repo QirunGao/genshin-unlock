@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <string_view>
 
+#include <Windows.h>
+
 namespace z3lx::launcher {
 
 using namespace z3lx::shared;
