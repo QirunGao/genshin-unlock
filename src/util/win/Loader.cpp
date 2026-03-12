@@ -56,9 +56,10 @@ std::filesystem::path GetModuleFilePath(const std::wstring_view moduleName) {
 
 void LoadRemoteLibrary(
     const HANDLE processHandle,
+    const HANDLE threadHandle,
     const std::filesystem::path& libraryPath) {
     const std::span libraryPaths { &libraryPath, 1 };
-    LoadRemoteLibrary(processHandle, libraryPaths);
+    LoadRemoteLibrary(processHandle, threadHandle, libraryPaths);
 }
 
 } // namespace z3lx::util

@@ -12,11 +12,21 @@ endif()
 add_compile_options(
     /permissive-
     /utf-8
+    /guard:cf
+    /Qspectre
     "$<$<CONFIG:Release>:/GL>"
     "$<$<CONFIG:Release>:/Gw>"
 )
 add_link_options(
+    /guard:cf
+    /DYNAMICBASE
+    /NXCOMPAT
+    /HIGHENTROPYVA
+    /CETCOMPAT
     "$<$<CONFIG:Release>:/LTCG>"
+    "$<$<CONFIG:Release>:/DEBUG>"
+    "$<$<CONFIG:Release>:/OPT:REF>"
+    "$<$<CONFIG:Release>:/OPT:ICF>"
 )
 
 include(FetchContent)
@@ -50,9 +60,24 @@ FetchContent_MakeAvailable(wil)
 
 set(RESOURCES_DIR ${CMAKE_CURRENT_BINARY_DIR}/res)
 file(COPY res/ DESTINATION ${RESOURCES_DIR})
+
+set(VER_FILETYPE "VFT_APP")
+set(VER_INTERNALNAME "loader")
+set(VER_ORIGINALFILENAME "loader.exe")
+set(VER_FILEDESCRIPTION "Genshin Impact Game Launcher")
 configure_file(
     ${RESOURCES_DIR}/version.rc.in
-    ${RESOURCES_DIR}/version.rc
+    ${RESOURCES_DIR}/loader_version.rc
+    @ONLY
+)
+
+set(VER_FILETYPE "VFT_DLL")
+set(VER_INTERNALNAME "plugin")
+set(VER_ORIGINALFILENAME "plugin.dll")
+set(VER_FILEDESCRIPTION "Genshin Impact Configuration Plugin")
+configure_file(
+    ${RESOURCES_DIR}/version.rc.in
+    ${RESOURCES_DIR}/plugin_version.rc
     @ONLY
 )
 
@@ -76,7 +101,7 @@ target_link_libraries(loader
     PRIVATE util
 )
 target_link_options(loader PRIVATE
-    /MANIFESTUAC:level='requireAdministrator'
+    /MANIFEST:NO
 )
 
 file(GLOB_RECURSE PLUGIN_SOURCES src/plugin/*)

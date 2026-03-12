@@ -225,7 +225,7 @@ void StartGame(const z::Config& config) {
         nullptr,
         nullptr,
         FALSE,
-        config.suspendLoad ? CREATE_SUSPENDED : 0,
+        CREATE_SUSPENDED,
         nullptr,
         config.gamePath.parent_path().c_str(),
         &si,
@@ -234,10 +234,8 @@ void StartGame(const z::Config& config) {
     const wil::unique_handle process { pi.hProcess };
     const wil::unique_handle thread { pi.hThread };
 
-    z::LoadRemoteLibrary(process.get(), config.dllPaths);
-    if (config.suspendLoad) {
-        ResumeThread(thread.get());
-    }
+    z::LoadRemoteLibrary(process.get(), thread.get(), config.dllPaths);
+    ResumeThread(thread.get());
 }
 } // namespace
 

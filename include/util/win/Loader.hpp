@@ -15,11 +15,13 @@ std::filesystem::path GetModuleFilePath(std::wstring_view moduleName);
 
 void LoadRemoteLibrary(
     HANDLE processHandle,
+    HANDLE threadHandle,
     const std::filesystem::path& libraryPath
 );
 template <typename Container>
 void LoadRemoteLibrary(
     HANDLE processHandle,
+    HANDLE threadHandle,
     const Container& libraryPaths
 );
 } // namespace z3lx::util
