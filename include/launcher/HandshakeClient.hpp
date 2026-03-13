@@ -23,6 +23,13 @@ public:
     StatusCode WaitForRuntimeInitResult(RuntimeInitResultMessage& response, uint32_t timeoutMs = 10000);
     StatusCode SendShutdown(const ShutdownRequestMessage& msg);
 
+    // Runtime event receiving (monitoring phase)
+    bool HasPendingData() const noexcept;
+    StatusCode PeekMessageHeader(MessageHeader& header);
+    StatusCode ReceiveHeartbeat(StatusHeartbeatMessage& msg);
+    StatusCode ReceiveHookStateChanged(HookStateChangedMessage& msg);
+    StatusCode ReceiveError(ErrorEventMessage& msg);
+
     [[nodiscard]] bool IsConnected() const noexcept;
     void Disconnect() noexcept;
 

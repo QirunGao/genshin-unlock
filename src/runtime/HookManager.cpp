@@ -42,12 +42,16 @@ StatusCode HookManager::SetHookState(const std::string& name,
 
 StatusCode HookManager::InstallAll() {
     for (auto& entry : hooks) {
-        if (!entry.installed && entry.definition.target && entry.definition.detour) {
+        if (entry.installed) continue;
+        // Use lifecycle callback if provided, otherwise use target+detour presence.
+        if (entry.definition.installFn) {
+            entry.installed = entry.definition.installFn();
+        } else if (entry.definition.target && entry.definition.detour) {
             entry.installed = true;
-            if (stateChangeCallback) {
-                stateChangeCallback(
-                    entry.definition.name, entry.installed, entry.enabled);
-            }
+        }
+        if (entry.installed && stateChangeCallback) {
+            stateChangeCallback(
+                entry.definition.name, entry.installed, entry.enabled);
         }
     }
     return StatusCode::Ok;
@@ -55,6 +59,9 @@ StatusCode HookManager::InstallAll() {
 
 StatusCode HookManager::UninstallAll() {
     for (auto& entry : hooks) {
+        if (entry.definition.uninstallFn && entry.installed) {
+            entry.definition.uninstallFn();
+        }
         entry.installed = false;
         entry.enabled = false;
         if (stateChangeCallback) {
@@ -72,6 +79,9 @@ StatusCode HookManager::Enable(const std::string& name) {
     if (!it->installed) return StatusCode::HookInstallFailed;
 
     it->enabled = true;
+    if (it->definition.setEnabledFn) {
+        it->definition.setEnabledFn(true);
+    }
     if (stateChangeCallback) {
         stateChangeCallback(name, it->installed, it->enabled);
     }
@@ -84,6 +94,9 @@ StatusCode HookManager::Disable(const std::string& name) {
     if (it == hooks.end()) return StatusCode::HookInstallFailed;
 
     it->enabled = false;
+    if (it->definition.setEnabledFn) {
+        it->definition.setEnabledFn(false);
+    }
     if (stateChangeCallback) {
         stateChangeCallback(name, it->installed, it->enabled);
     }
@@ -94,6 +107,9 @@ StatusCode HookManager::EnableAll() {
     for (auto& entry : hooks) {
         if (entry.installed) {
             entry.enabled = true;
+            if (entry.definition.setEnabledFn) {
+                entry.definition.setEnabledFn(true);
+            }
             if (stateChangeCallback) {
                 stateChangeCallback(
                     entry.definition.name, entry.installed, entry.enabled);
@@ -106,6 +122,9 @@ StatusCode HookManager::EnableAll() {
 StatusCode HookManager::DisableAll() {
     for (auto& entry : hooks) {
         entry.enabled = false;
+        if (entry.definition.setEnabledFn) {
+            entry.definition.setEnabledFn(false);
+        }
         if (stateChangeCallback) {
             stateChangeCallback(
                 entry.definition.name, entry.installed, entry.enabled);

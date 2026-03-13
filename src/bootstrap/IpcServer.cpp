@@ -154,6 +154,12 @@ bool IpcServer::IsConnected() const noexcept {
     return pipeHandle != INVALID_HANDLE_VALUE;
 }
 
+HANDLE IpcServer::ReleaseHandle() noexcept {
+    const HANDLE h = pipeHandle;
+    pipeHandle = INVALID_HANDLE_VALUE;
+    return h;
+}
+
 void IpcServer::Close() noexcept {
     if (pipeHandle != INVALID_HANDLE_VALUE) {
         FlushFileBuffers(pipeHandle);

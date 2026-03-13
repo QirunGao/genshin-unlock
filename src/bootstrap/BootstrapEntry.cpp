@@ -12,6 +12,10 @@
 
 namespace z3lx::bootstrap {
 
+// Persistent IPC server — heap-allocated so the pipe handle stays valid
+// for the runtime's background thread after BootstrapInitialize returns.
+static IpcServer* g_persistentIpc = nullptr;
+
 extern HMODULE GetBootstrapModule() noexcept;
 
 extern "C" __declspec(dllexport)
@@ -33,19 +37,26 @@ BootstrapInitResult BootstrapInitialize(const BootstrapInitParams* params) {
 
     // Step 2: Establish IPC — create pipe and wait for launcher connection
     const uint32_t gamePid = GetCurrentProcessId();
-    IpcServer ipc { gamePid };
-    if (ipc.Create() != StatusCode::Ok) {
+    auto* ipc = new (std::nothrow) IpcServer { gamePid };
+    if (!ipc) {
         result.status = StatusCode::IpcDisconnected;
         return result;
     }
-    if (ipc.WaitForConnection() != StatusCode::Ok) {
+    if (ipc->Create() != StatusCode::Ok) {
+        delete ipc;
+        result.status = StatusCode::IpcDisconnected;
+        return result;
+    }
+    if (ipc->WaitForConnection() != StatusCode::Ok) {
+        delete ipc;
         result.status = StatusCode::IpcDisconnected;
         return result;
     }
 
     // Step 3: Receive Hello from launcher
     HelloMessage hello {};
-    if (ipc.ReceiveHello(hello) != StatusCode::Ok) {
+    if (ipc->ReceiveHello(hello) != StatusCode::Ok) {
+        delete ipc;
         result.status = StatusCode::IpcDisconnected;
         return result;
     }
@@ -59,11 +70,12 @@ BootstrapInitResult BootstrapInitialize(const BootstrapInitParams* params) {
     CopyToFixedString(readyMsg.hostVersion,
         sizeof(readyMsg.hostVersion),
         hostResult.hostVersion.c_str());
-    ipc.SendBootstrapReady(readyMsg);
+    ipc->SendBootstrapReady(readyMsg);
 
     // Step 5: Receive ConfigSnapshot from launcher
     ConfigSnapshotMessage config {};
-    if (ipc.ReceiveConfigSnapshot(config) != StatusCode::Ok) {
+    if (ipc->ReceiveConfigSnapshot(config) != StatusCode::Ok) {
+        delete ipc;
         result.status = StatusCode::IpcDisconnected;
         return result;
     }
@@ -84,12 +96,15 @@ BootstrapInitResult BootstrapInitialize(const BootstrapInitParams* params) {
         result.status = loadResult.status;
         RuntimeInitResultMessage initMsg {};
         initMsg.status = loadResult.status;
-        ipc.SendRuntimeInitResult(initMsg);
+        ipc->SendRuntimeInitResult(initMsg);
+        delete ipc;
         return result;
     }
     result.runtimeLoaded = true;
 
-    // Step 7: Call RuntimeInitialize from runtime.dll with config
+    // Step 7: Call RuntimeInitialize from runtime.dll with config.
+    //         Share the pipe handle so the runtime background thread can
+    //         send heartbeat / hook-state / error events to the launcher.
     using RuntimeInitFn =
         runtime::RuntimeInitResult (*)(const runtime::RuntimeInitParams*);
     const auto runtimeInit = reinterpret_cast<RuntimeInitFn>(
@@ -98,9 +113,17 @@ BootstrapInitResult BootstrapInitialize(const BootstrapInitParams* params) {
 
     RuntimeInitResultMessage initResultMsg {};
     if (runtimeInit) {
+        // Release the pipe handle so only the runtime background thread
+        // writes to it from now on.  We save the raw handle so we can
+        // send RuntimeInitResult immediately after RuntimeInitialize
+        // returns — the background loop hasn't started its 1-Hz
+        // heartbeat yet, so there is no concurrent write.
+        const HANDLE pipeHandle = ipc->ReleaseHandle();
+
         runtime::RuntimeInitParams runtimeParams {};
         runtimeParams.config = config;
         runtimeParams.gamePid = gamePid;
+        runtimeParams.ipcPipeHandle = static_cast<void*>(pipeHandle);
 
         const auto runtimeResult = runtimeInit(&runtimeParams);
         initResultMsg.status = runtimeResult.status;
@@ -108,13 +131,24 @@ BootstrapInitResult BootstrapInitialize(const BootstrapInitParams* params) {
         initResultMsg.fovAvailable = runtimeResult.fovAvailable ? 1u : 0u;
         result.runtimeInitialized =
             (runtimeResult.status == StatusCode::Ok);
+
+        // Send RuntimeInitResult through the released handle.
+        const MessageHeader hdr {
+            .type = MessageType::RuntimeInitResult,
+            .payloadSize = static_cast<uint32_t>(sizeof(initResultMsg))
+        };
+        DWORD written = 0;
+        WriteFile(pipeHandle, &hdr, sizeof(hdr), &written, nullptr);
+        WriteFile(pipeHandle, &initResultMsg,
+            sizeof(initResultMsg), &written, nullptr);
     } else {
         initResultMsg.status = StatusCode::RuntimeInitFailed;
         result.status = StatusCode::RuntimeInitFailed;
+        ipc->SendRuntimeInitResult(initResultMsg);
     }
 
-    // Step 8: Send RuntimeInitResult to launcher
-    ipc.SendRuntimeInitResult(initResultMsg);
+    // Keep IpcServer alive to prevent premature cleanup.
+    g_persistentIpc = ipc;
 
     return result;
 }

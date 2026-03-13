@@ -5,6 +5,7 @@
 #include "runtime/FpsService.hpp"
 #include "runtime/FovService.hpp"
 #include "runtime/InputSampler.hpp"
+#include "runtime/IpcWriter.hpp"
 #include "runtime/LoggerProxy.hpp"
 #include "shared/Protocol.hpp"
 #include "shared/VersionTable.hpp"
@@ -24,6 +25,8 @@
 
 namespace z3lx::runtime {
 
+using ConfigSnapshotMessage = shared::ConfigSnapshotMessage;
+
 struct RuntimeContext {
     RuntimeState state;
     MemoryResolver resolver;
@@ -31,8 +34,10 @@ struct RuntimeContext {
     FpsService fpsService;
     FovService fovService;
     InputSampler inputSampler;
+    IpcWriter ipcWriter;
     LoggerProxy logger;
     ConfigSnapshotMessage config;
+    std::chrono::steady_clock::time_point startTime;
 };
 
 static void RuntimeLoop(RuntimeContext& ctx);
@@ -43,6 +48,7 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
     RuntimeContext ctx {};
 
     ctx.logger.Info("Runtime initializing");
+    ctx.startTime = std::chrono::steady_clock::now();
 
     // Transition: Created -> HostValidated
     ctx.state.TransitionTo(State::HostValidated);
@@ -50,9 +56,27 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
     // Apply configuration from launcher (no file I/O)
     if (params) {
         ctx.config = params->config;
+        // Set up IPC writer for heartbeat / hook-state / error events
+        if (params->ipcPipeHandle) {
+            ctx.ipcWriter.SetHandle(
+                static_cast<HANDLE>(params->ipcPipeHandle));
+        }
     }
 
     ctx.state.TransitionTo(State::ConfigReady);
+
+    // Wire HookManager state-change callback to IPC
+    ctx.hookManager.SetStateChangeCallback(
+        [&ctx](const std::string& name, bool installed, bool enabled) {
+            if (!ctx.ipcWriter.IsConnected()) return;
+            HookStateChangedMessage msg {};
+            CopyToFixedString(msg.hookName, sizeof(msg.hookName),
+                name.c_str());
+            msg.installed = installed ? 1u : 0u;
+            msg.enabled = enabled ? 1u : 0u;
+            msg.status = StatusCode::Ok;
+            ctx.ipcWriter.SendHookStateChanged(msg);
+        });
 
     // Resolve memory addresses using version table
     const auto versionTable = shared::MakeDefaultVersionTable();
@@ -123,27 +147,38 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
         return result;
     }
 
-    // Initialize FPS service
+    // Initialize FPS service via HookManager
     if (addresses->fpsAddress) {
-        const auto fpsStatus = ctx.fpsService.Initialize(
-            addresses->fpsAddress);
-        result.fpsAvailable = (fpsStatus == StatusCode::Ok);
-        if (result.fpsAvailable) {
-            ctx.hookManager.RegisterHook("FpsUnlock");
-            ctx.hookManager.SetHookState("FpsUnlock", true, true);
-        }
+        ctx.hookManager.Register(HookDefinition {
+            .name = "FpsUnlock",
+            .target = addresses->fpsAddress,
+            .installFn = [&ctx, addr = addresses->fpsAddress]() {
+                return ctx.fpsService.Initialize(addr) == StatusCode::Ok;
+            },
+            .setEnabledFn = [&ctx](bool e) {
+                ctx.fpsService.SetEnabled(e);
+            }
+        });
     }
 
-    // Initialize FOV service
+    // Initialize FOV service via HookManager
     if (addresses->fovTarget) {
-        const auto fovStatus = ctx.fovService.Initialize(
-            addresses->fovTarget);
-        result.fovAvailable = (fovStatus == StatusCode::Ok);
-        if (result.fovAvailable) {
-            ctx.hookManager.RegisterHook("FovUnlock");
-            ctx.hookManager.SetHookState("FovUnlock", true, true);
-        }
+        ctx.hookManager.Register(HookDefinition {
+            .name = "FovUnlock",
+            .target = addresses->fovTarget,
+            .installFn = [&ctx, target = addresses->fovTarget]() {
+                return ctx.fovService.Initialize(target) == StatusCode::Ok;
+            },
+            .setEnabledFn = [&ctx](bool e) {
+                ctx.fovService.SetEnabled(e);
+            }
+        });
     }
+
+    // HookManager installs all registered hooks
+    ctx.hookManager.InstallAll();
+    result.fpsAvailable = ctx.hookManager.IsInstalled("FpsUnlock");
+    result.fovAvailable = ctx.hookManager.IsInstalled("FovUnlock");
 
     ctx.state.TransitionTo(State::HooksInstalled);
 
@@ -154,6 +189,9 @@ RuntimeInitResult RuntimeInitialize(const RuntimeInitParams* params) {
     ctx.fovService.SetEnabled(ctx.config.unlockFov != 0);
     ctx.fovService.SetTargetFov(ctx.config.targetFov);
     ctx.fovService.SetSmoothing(ctx.config.fovSmoothing);
+
+    // Enable all hooks via HookManager
+    ctx.hookManager.EnableAll();
 
     ctx.state.TransitionTo(State::Running);
     ctx.logger.Info("Runtime initialized successfully");
@@ -173,6 +211,8 @@ static void RuntimeLoop(RuntimeContext& ctx) {
     const auto unlockFovKey = static_cast<VK>(ctx.config.unlockFovKey);
     const auto nextPresetKey = static_cast<VK>(ctx.config.nextFovPresetKey);
     const auto prevPresetKey = static_cast<VK>(ctx.config.prevFovPresetKey);
+
+    uint32_t tickCount = 0;
 
     while (!ctx.state.IsTerminal()) {
         ctx.inputSampler.Sample();
@@ -216,6 +256,26 @@ static void RuntimeLoop(RuntimeContext& ctx) {
         }
 
         ctx.fovService.Update();
+
+        // Heartbeat at ~1 Hz (every 60 ticks at 60 Hz)
+        ++tickCount;
+        if (tickCount >= 60 && ctx.ipcWriter.IsConnected()) {
+            tickCount = 0;
+            const auto now = std::chrono::steady_clock::now();
+            const auto uptime = std::chrono::duration_cast<
+                std::chrono::seconds>(now - ctx.startTime);
+
+            StatusHeartbeatMessage heartbeat {};
+            heartbeat.runtimeState =
+                static_cast<uint32_t>(ctx.state.GetState());
+            heartbeat.fpsActive =
+                ctx.hookManager.IsEnabled("FpsUnlock") ? 1u : 0u;
+            heartbeat.fovActive =
+                ctx.hookManager.IsEnabled("FovUnlock") ? 1u : 0u;
+            heartbeat.uptimeSeconds =
+                static_cast<uint32_t>(uptime.count());
+            ctx.ipcWriter.SendHeartbeat(heartbeat);
+        }
 
         // Tick at ~60 Hz
         std::this_thread::sleep_for(

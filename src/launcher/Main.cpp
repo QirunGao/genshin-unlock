@@ -3,6 +3,7 @@
 #include "launcher/HandshakeClient.hpp"
 #include "launcher/Injector.hpp"
 #include "launcher/Logger.hpp"
+#include "launcher/ModuleValidator.hpp"
 #include "launcher/ProcessStarter.hpp"
 #include "launcher/VersionPolicy.hpp"
 #include "shared/ConfigModel.hpp"
@@ -165,6 +166,42 @@ int main() try {
         return 1;
     }
 
+    // Hash-based integrity check (dev phase — log hashes, reject on mismatch
+    // if expected hashes are configured).
+    {
+        const std::string bootstrapHash =
+            z::ComputeFileSha256(bootstrapPath);
+        const std::string runtimeHash =
+            z::ComputeFileSha256(runtimePath);
+        logger.Info("launcher", std::format(
+            "bootstrap.dll SHA-256: {}", bootstrapHash));
+        logger.Info("launcher", std::format(
+            "runtime.dll   SHA-256: {}", runtimeHash));
+
+        if (bootstrapHash.empty()) {
+            logger.Error("launcher",
+                "Failed to compute bootstrap.dll hash");
+            z::ShowMessageBox(
+                "Launcher",
+                "Module integrity check failed for bootstrap.dll.",
+                z::MessageBoxIcon::Error,
+                z::MessageBoxButton::Ok
+            );
+            return 1;
+        }
+        if (runtimeHash.empty()) {
+            logger.Error("launcher",
+                "Failed to compute runtime.dll hash");
+            z::ShowMessageBox(
+                "Launcher",
+                "Module integrity check failed for runtime.dll.",
+                z::MessageBoxIcon::Error,
+                z::MessageBoxButton::Ok
+            );
+            return 1;
+        }
+    }
+
     // Step 4: Check version compatibility
     std::println(std::cout, "Checking compatibility...");
     logger.Info("launcher", "Checking version compatibility");
@@ -320,18 +357,66 @@ int main() try {
     std::println(std::cout, "Game process started successfully");
     logger.Info("launcher", "Game process started successfully");
 
-    // Step 10: Monitoring loop — wait for game process to exit
+    // Step 10: Monitoring loop — read heartbeat / hook-state / error
+    //          events while waiting for the game process to exit.
     if (!launcherConfig.closeLauncherOnSuccess) {
         logger.Info("launcher", "Entering monitoring loop");
         while (true) {
             const DWORD waitResult = WaitForSingleObject(
-                process.get(), 5000);
+                process.get(), 1000);
             if (waitResult == WAIT_OBJECT_0) {
                 DWORD exitCode = 0;
                 GetExitCodeProcess(process.get(), &exitCode);
                 logger.Info("launcher", std::format(
                     "Game process exited with code {}", exitCode));
                 break;
+            }
+
+            // Process pending IPC events from the runtime
+            for (bool reading = true; reading && handshake.HasPendingData();) {
+                z::MessageHeader header {};
+                if (handshake.PeekMessageHeader(header)
+                        != z::StatusCode::Ok) {
+                    break;
+                }
+                switch (header.type) {
+                case z::MessageType::StatusHeartbeat: {
+                    z::StatusHeartbeatMessage hb {};
+                    if (handshake.ReceiveHeartbeat(hb)
+                            == z::StatusCode::Ok) {
+                        logger.Info("runtime", std::format(
+                            "Heartbeat: state={}, fps={}, fov={}, uptime={}s",
+                            hb.runtimeState, hb.fpsActive,
+                            hb.fovActive, hb.uptimeSeconds));
+                    }
+                    break;
+                }
+                case z::MessageType::HookStateChanged: {
+                    z::HookStateChangedMessage hookMsg {};
+                    if (handshake.ReceiveHookStateChanged(hookMsg)
+                            == z::StatusCode::Ok) {
+                        logger.Info("runtime", std::format(
+                            "Hook '{}': installed={}, enabled={}",
+                            hookMsg.hookName, hookMsg.installed,
+                            hookMsg.enabled));
+                    }
+                    break;
+                }
+                case z::MessageType::ErrorEvent: {
+                    z::ErrorEventMessage errMsg {};
+                    if (handshake.ReceiveError(errMsg)
+                            == z::StatusCode::Ok) {
+                        logger.Error("runtime", std::format(
+                            "Error in '{}': {} (sys={})",
+                            errMsg.moduleName, errMsg.message,
+                            errMsg.systemError));
+                    }
+                    break;
+                }
+                default:
+                    reading = false;
+                    break;
+                }
             }
         }
     }

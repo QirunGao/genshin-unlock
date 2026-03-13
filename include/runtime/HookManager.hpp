@@ -15,6 +15,11 @@ struct HookDefinition {
     std::string name;
     void* target = nullptr;
     void* detour = nullptr;
+    // Lifecycle callbacks — HookManager delegates actual install/enable
+    // to the owning service through these.
+    std::function<bool()> installFn;              // returns true on success
+    std::function<void()> uninstallFn;
+    std::function<void(bool)> setEnabledFn;       // enable(true) / disable(false)
 };
 
 struct HookEntry {

@@ -27,6 +27,7 @@ public:
     StatusCode SendError(const ErrorEventMessage& error);
 
     [[nodiscard]] bool IsConnected() const noexcept;
+    [[nodiscard]] HANDLE ReleaseHandle() noexcept;
     void Close() noexcept;
 
 private:

@@ -106,6 +106,43 @@ StatusCode HandshakeClient::SendShutdown(const ShutdownRequestMessage& msg) {
     return SendPayload(MessageType::ShutdownRequest, msg);
 }
 
+bool HandshakeClient::HasPendingData() const noexcept {
+    if (!IsConnected()) return false;
+    DWORD bytesAvailable = 0;
+    if (!PeekNamedPipe(pipeHandle, nullptr, 0,
+            nullptr, &bytesAvailable, nullptr)) {
+        return false;
+    }
+    return bytesAvailable >= sizeof(MessageHeader);
+}
+
+StatusCode HandshakeClient::PeekMessageHeader(MessageHeader& header) {
+    if (!IsConnected()) return StatusCode::IpcDisconnected;
+    DWORD bytesRead = 0;
+    DWORD bytesAvailable = 0;
+    if (!PeekNamedPipe(pipeHandle, &header, sizeof(header),
+            &bytesRead, &bytesAvailable, nullptr)) {
+        return StatusCode::IpcDisconnected;
+    }
+    if (bytesRead < sizeof(header)) {
+        return StatusCode::IpcDisconnected;
+    }
+    return StatusCode::Ok;
+}
+
+StatusCode HandshakeClient::ReceiveHeartbeat(StatusHeartbeatMessage& msg) {
+    return ReceivePayload(MessageType::StatusHeartbeat, msg);
+}
+
+StatusCode HandshakeClient::ReceiveHookStateChanged(
+    HookStateChangedMessage& msg) {
+    return ReceivePayload(MessageType::HookStateChanged, msg);
+}
+
+StatusCode HandshakeClient::ReceiveError(ErrorEventMessage& msg) {
+    return ReceivePayload(MessageType::ErrorEvent, msg);
+}
+
 bool HandshakeClient::IsConnected() const noexcept {
     return pipeHandle != INVALID_HANDLE_VALUE;
 }
