@@ -4,6 +4,7 @@
 #include "shared/StatusCode.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 
 #include <Windows.h>
@@ -20,6 +21,8 @@ public:
     explicit IpcWriter(HANDLE pipeHandle) noexcept;
     ~IpcWriter() noexcept;
 
+    IpcWriter(IpcWriter&& other) noexcept;
+    IpcWriter& operator=(IpcWriter&& other) noexcept;
     IpcWriter(const IpcWriter&) = delete;
     IpcWriter& operator=(const IpcWriter&) = delete;
 
@@ -36,7 +39,7 @@ private:
     StatusCode SendPayload(MessageType type, const T& payload);
 
     HANDLE pipeHandle = INVALID_HANDLE_VALUE;
-    std::mutex mutex;
+    std::unique_ptr<std::mutex> mutex;
 };
 
 } // namespace z3lx::runtime

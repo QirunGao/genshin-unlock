@@ -25,8 +25,6 @@
 
 namespace z3lx::runtime {
 
-using ConfigSnapshotMessage = shared::ConfigSnapshotMessage;
-
 struct RuntimeContext {
     RuntimeState state;
     MemoryResolver resolver;

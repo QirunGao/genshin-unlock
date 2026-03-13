@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 
 #include <Windows.h>
@@ -21,13 +22,17 @@ void HkSetFieldOfView(void* instance, float value) noexcept;
 
 namespace z3lx::runtime {
 
-FovService::FovService() noexcept = default;
+FovService::FovService() noexcept
+    : mutex { std::make_unique<std::mutex>() } {}
 
 FovService::~FovService() noexcept {
     std::lock_guard lock { g_hookMutex };
     g_fovHook = {};
     g_activeService = nullptr;
 }
+
+FovService::FovService(FovService&& other) noexcept = default;
+FovService& FovService::operator=(FovService&& other) noexcept = default;
 
 StatusCode FovService::Initialize(void* fovTarget) {
     if (!fovTarget) {
@@ -44,17 +49,17 @@ StatusCode FovService::Initialize(void* fovTarget) {
 }
 
 void FovService::SetEnabled(const bool enable) noexcept {
-    std::lock_guard lock { mutex };
+    std::lock_guard lock { *mutex };
     enabled = enable;
 }
 
 void FovService::SetTargetFov(const int fov) noexcept {
-    std::lock_guard lock { mutex };
+    std::lock_guard lock { *mutex };
     targetFov = fov;
 }
 
 void FovService::SetSmoothing(const float smoothing) noexcept {
-    std::lock_guard lock { mutex };
+    std::lock_guard lock { *mutex };
     filter.SetTimeConstant(smoothing);
 }
 

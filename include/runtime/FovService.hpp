@@ -4,6 +4,7 @@
 #include "util/ExponentialFilter.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 
 namespace z3lx::runtime {
@@ -14,6 +15,11 @@ class FovService {
 public:
     FovService() noexcept;
     ~FovService() noexcept;
+
+    FovService(FovService&& other) noexcept;
+    FovService& operator=(FovService&& other) noexcept;
+    FovService(const FovService&) = delete;
+    FovService& operator=(const FovService&) = delete;
 
     StatusCode Initialize(void* fovTarget);
 
@@ -44,7 +50,7 @@ private:
     bool isPreviousFov = false;
 
     util::ExponentialFilter<float> filter {};
-    std::mutex mutex;
+    std::unique_ptr<std::mutex> mutex;
 };
 
 } // namespace z3lx::runtime

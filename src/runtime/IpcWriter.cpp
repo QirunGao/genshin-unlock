@@ -1,25 +1,46 @@
 #include "runtime/IpcWriter.hpp"
 
+#include <memory>
+#include <mutex>
+#include <utility>
+
 #include <Windows.h>
 
 namespace z3lx::runtime {
 
-IpcWriter::IpcWriter() noexcept = default;
+IpcWriter::IpcWriter() noexcept
+    : mutex { std::make_unique<std::mutex>() } {}
 
 IpcWriter::IpcWriter(const HANDLE pipeHandle) noexcept
-    : pipeHandle { pipeHandle } {}
+    : pipeHandle { pipeHandle }
+    , mutex { std::make_unique<std::mutex>() } {}
 
 IpcWriter::~IpcWriter() noexcept = default;
 
+IpcWriter::IpcWriter(IpcWriter&& other) noexcept
+    : pipeHandle { other.pipeHandle }
+    , mutex { std::move(other.mutex) } {
+    other.pipeHandle = INVALID_HANDLE_VALUE;
+}
+
+IpcWriter& IpcWriter::operator=(IpcWriter&& other) noexcept {
+    if (this != &other) {
+        pipeHandle = other.pipeHandle;
+        mutex = std::move(other.mutex);
+        other.pipeHandle = INVALID_HANDLE_VALUE;
+    }
+    return *this;
+}
+
 void IpcWriter::SetHandle(const HANDLE handle) noexcept {
-    std::lock_guard lock { mutex };
+    std::lock_guard lock { *mutex };
     pipeHandle = handle;
 }
 
 template <typename T>
 StatusCode IpcWriter::SendPayload(
     const MessageType type, const T& payload) {
-    std::lock_guard lock { mutex };
+    std::lock_guard lock { *mutex };
     if (!IsConnected()) return StatusCode::IpcDisconnected;
 
     const MessageHeader header {
