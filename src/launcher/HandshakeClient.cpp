@@ -1,5 +1,6 @@
 #include "launcher/HandshakeClient.hpp"
 
+#include <cstdint>
 #include <format>
 #include <string>
 
@@ -8,16 +9,15 @@
 namespace z3lx::launcher {
 
 HandshakeClient::HandshakeClient(const uint32_t gamePid) noexcept
-    : gamePid { gamePid }
-    , pipeName { std::format("{}{}",
-        kPipeNamePrefix, gamePid) } {}
+    : gamePid { gamePid } {}
 
 HandshakeClient::~HandshakeClient() noexcept {
     Disconnect();
 }
 
 StatusCode HandshakeClient::Connect(const uint32_t timeoutMs) {
-    // Wait for pipe to become available
+    const std::string pipeName = std::format("{}{}", kPipeNamePrefix, gamePid);
+
     if (!WaitNamedPipeA(pipeName.c_str(), timeoutMs)) {
         return StatusCode::IpcDisconnected;
     }
@@ -35,105 +35,112 @@ StatusCode HandshakeClient::Connect(const uint32_t timeoutMs) {
         return StatusCode::IpcDisconnected;
     }
 
-    // Set pipe to message mode
-    DWORD mode = PIPE_READMODE_MESSAGE;
+    DWORD mode = PIPE_READMODE_BYTE;
     SetNamedPipeHandleState(pipeHandle, &mode, nullptr, nullptr);
 
     return StatusCode::Ok;
 }
 
-StatusCode HandshakeClient::SendHello(const HelloMessage& msg) {
+template <typename T>
+StatusCode HandshakeClient::SendPayload(
+    const MessageType type, const T& payload) {
     if (!IsConnected()) return StatusCode::IpcDisconnected;
 
-    MessageHeader header {
-        .type = MessageType::Hello,
-        .payloadSize = sizeof(msg)
+    const MessageHeader header {
+        .type = type,
+        .payloadSize = static_cast<uint32_t>(sizeof(T))
     };
     DWORD written = 0;
-    if (!WriteFile(pipeHandle, &header, sizeof(header), &written, nullptr) ||
-        !WriteFile(pipeHandle, &msg.session.protocolVersion,
-                   sizeof(uint32_t), &written, nullptr)) {
+    if (!WriteFile(pipeHandle, &header, sizeof(header),
+            &written, nullptr) || written != sizeof(header)) {
+        return StatusCode::IpcDisconnected;
+    }
+    if (!WriteFile(pipeHandle, &payload, sizeof(T),
+            &written, nullptr) || written != sizeof(T)) {
         return StatusCode::IpcDisconnected;
     }
     return StatusCode::Ok;
+}
+
+template <typename T>
+StatusCode HandshakeClient::ReceivePayload(
+    const MessageType expectedType, T& payload) {
+    if (!IsConnected()) return StatusCode::IpcDisconnected;
+
+    MessageHeader header {};
+    DWORD bytesRead = 0;
+    if (!ReadFile(pipeHandle, &header, sizeof(header),
+            &bytesRead, nullptr) || bytesRead != sizeof(header)) {
+        return StatusCode::IpcDisconnected;
+    }
+    if (header.type != expectedType || header.payloadSize != sizeof(T)) {
+        return StatusCode::IpcDisconnected;
+    }
+    if (!ReadFile(pipeHandle, &payload, sizeof(T),
+            &bytesRead, nullptr) || bytesRead != sizeof(T)) {
+        return StatusCode::IpcDisconnected;
+    }
+    return StatusCode::Ok;
+}
+
+StatusCode HandshakeClient::SendHello(const HelloMessage& msg) {
+    return SendPayload(MessageType::Hello, msg);
 }
 
 StatusCode HandshakeClient::WaitForBootstrapReady(
-    BootstrapReadyMessage& response, const uint32_t timeoutMs) {
-    if (!IsConnected()) return StatusCode::IpcDisconnected;
-
-    MessageHeader header {};
-    DWORD bytesRead = 0;
-    if (!ReadFile(pipeHandle, &header, sizeof(header), &bytesRead, nullptr)) {
-        return StatusCode::IpcDisconnected;
-    }
-    if (header.type != MessageType::BootstrapReady) {
-        return StatusCode::BootstrapInitFailed;
-    }
-
-    uint32_t statusVal = 0;
-    if (!ReadFile(pipeHandle, &statusVal, sizeof(statusVal), &bytesRead, nullptr)) {
-        return StatusCode::IpcDisconnected;
-    }
-    response.status = static_cast<StatusCode>(statusVal);
-    return StatusCode::Ok;
+    BootstrapReadyMessage& response, const uint32_t /*timeoutMs*/) {
+    return ReceivePayload(MessageType::BootstrapReady, response);
 }
 
-StatusCode HandshakeClient::SendConfigSnapshot(const ConfigSnapshotMessage& config) {
-    if (!IsConnected()) return StatusCode::IpcDisconnected;
-
-    MessageHeader header {
-        .type = MessageType::ConfigSnapshot,
-        .payloadSize = sizeof(config)
-    };
-    DWORD written = 0;
-    if (!WriteFile(pipeHandle, &header, sizeof(header), &written, nullptr) ||
-        !WriteFile(pipeHandle, &config, sizeof(config), &written, nullptr)) {
-        return StatusCode::IpcDisconnected;
-    }
-    return StatusCode::Ok;
+StatusCode HandshakeClient::SendConfigSnapshot(
+    const ConfigSnapshotMessage& config) {
+    return SendPayload(MessageType::ConfigSnapshot, config);
 }
 
 StatusCode HandshakeClient::WaitForRuntimeInitResult(
-    RuntimeInitResultMessage& response, const uint32_t timeoutMs) {
-    if (!IsConnected()) return StatusCode::IpcDisconnected;
-
-    MessageHeader header {};
-    DWORD bytesRead = 0;
-    if (!ReadFile(pipeHandle, &header, sizeof(header), &bytesRead, nullptr)) {
-        return StatusCode::IpcDisconnected;
-    }
-    if (header.type != MessageType::RuntimeInitResult) {
-        return StatusCode::RuntimeInitFailed;
-    }
-
-    struct {
-        uint32_t status;
-        uint32_t fpsAvailable;
-        uint32_t fovAvailable;
-    } payload {};
-    if (!ReadFile(pipeHandle, &payload, sizeof(payload), &bytesRead, nullptr)) {
-        return StatusCode::IpcDisconnected;
-    }
-    response.status = static_cast<StatusCode>(payload.status);
-    response.fpsAvailable = payload.fpsAvailable != 0;
-    response.fovAvailable = payload.fovAvailable != 0;
-    return StatusCode::Ok;
+    RuntimeInitResultMessage& response, const uint32_t /*timeoutMs*/) {
+    return ReceivePayload(MessageType::RuntimeInitResult, response);
 }
 
 StatusCode HandshakeClient::SendShutdown(const ShutdownRequestMessage& msg) {
-    if (!IsConnected()) return StatusCode::IpcDisconnected;
+    return SendPayload(MessageType::ShutdownRequest, msg);
+}
 
-    MessageHeader header {
-        .type = MessageType::ShutdownRequest,
-        .payloadSize = sizeof(msg)
-    };
-    DWORD written = 0;
-    if (!WriteFile(pipeHandle, &header, sizeof(header), &written, nullptr) ||
-        !WriteFile(pipeHandle, &msg, sizeof(msg), &written, nullptr)) {
+bool HandshakeClient::HasPendingData() const noexcept {
+    if (!IsConnected()) return false;
+    DWORD bytesAvailable = 0;
+    if (!PeekNamedPipe(pipeHandle, nullptr, 0,
+            nullptr, &bytesAvailable, nullptr)) {
+        return false;
+    }
+    return bytesAvailable >= sizeof(MessageHeader);
+}
+
+StatusCode HandshakeClient::PeekMessageHeader(MessageHeader& header) {
+    if (!IsConnected()) return StatusCode::IpcDisconnected;
+    DWORD bytesRead = 0;
+    DWORD bytesAvailable = 0;
+    if (!PeekNamedPipe(pipeHandle, &header, sizeof(header),
+            &bytesRead, &bytesAvailable, nullptr)) {
+        return StatusCode::IpcDisconnected;
+    }
+    if (bytesRead < sizeof(header)) {
         return StatusCode::IpcDisconnected;
     }
     return StatusCode::Ok;
+}
+
+StatusCode HandshakeClient::ReceiveHeartbeat(StatusHeartbeatMessage& msg) {
+    return ReceivePayload(MessageType::StatusHeartbeat, msg);
+}
+
+StatusCode HandshakeClient::ReceiveHookStateChanged(
+    HookStateChangedMessage& msg) {
+    return ReceivePayload(MessageType::HookStateChanged, msg);
+}
+
+StatusCode HandshakeClient::ReceiveError(ErrorEventMessage& msg) {
+    return ReceivePayload(MessageType::ErrorEvent, msg);
 }
 
 bool HandshakeClient::IsConnected() const noexcept {

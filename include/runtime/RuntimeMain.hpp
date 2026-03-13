@@ -12,6 +12,7 @@ using namespace z3lx::shared;
 struct RuntimeInitParams {
     ConfigSnapshotMessage config;
     uint32_t gamePid = 0;
+    void* ipcPipeHandle = nullptr;   // HANDLE — kept alive by bootstrap
 };
 
 struct RuntimeInitResult {

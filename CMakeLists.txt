@@ -129,6 +129,7 @@ target_link_libraries(launcher
     PRIVATE WIL::WIL
     PRIVATE util
     PRIVATE shared
+    PRIVATE bcrypt
 )
 target_link_options(launcher PRIVATE
     /MANIFEST:NO

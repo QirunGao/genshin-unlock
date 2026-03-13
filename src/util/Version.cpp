@@ -80,4 +80,7 @@ std::string Version::ToString() const {
 
 std::strong_ordering Version::operator<=>(
     const Version& other) const noexcept = default;
+
+bool Version::operator==(
+    const Version& other) const noexcept = default;
 } // namespace z3lx::util

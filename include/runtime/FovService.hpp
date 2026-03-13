@@ -4,37 +4,28 @@
 #include "util/ExponentialFilter.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 
 namespace z3lx::runtime {
 
 using namespace z3lx::shared;
 
-struct FovRuntimeState {
-    int targetFov = 45;
-    bool enabled = false;
-    bool enabledOnce = false;
-    bool hooked = false;
-
-    int setFovCount = 0;
-    void* previousInstance = nullptr;
-    float previousFov = 45.0f;
-    bool isPreviousFov = false;
-
-    util::ExponentialFilter<float> filter {};
-};
-
 class FovService {
 public:
     FovService() noexcept;
     ~FovService() noexcept;
+
+    FovService(FovService&& other) noexcept;
+    FovService& operator=(FovService&& other) noexcept;
+    FovService(const FovService&) = delete;
+    FovService& operator=(const FovService&) = delete;
 
     StatusCode Initialize(void* fovTarget);
 
     void SetEnabled(bool enabled) noexcept;
     void SetTargetFov(int fov) noexcept;
     void SetSmoothing(float smoothing) noexcept;
-    void SetHooked(bool hooked) noexcept;
 
     void Update() noexcept;
 
@@ -43,10 +34,23 @@ public:
     [[nodiscard]] bool IsHooked() const noexcept;
     [[nodiscard]] int GetTargetFov() const noexcept;
 
+    // Called from the hook callback — not part of the public API
+    void HandleHookCallback(void* instance, float& value) noexcept;
+
 private:
     bool available = false;
-    std::mutex mutex;
-    FovRuntimeState state;
+    bool enabled = false;
+    bool hooked = false;
+    bool enabledOnce = false;
+    int targetFov = 45;
+
+    int setFovCount = 0;
+    void* previousInstance = nullptr;
+    float previousFov = 45.0f;
+    bool isPreviousFov = false;
+
+    util::ExponentialFilter<float> filter {};
+    std::unique_ptr<std::mutex> mutex;
 };
 
 } // namespace z3lx::runtime

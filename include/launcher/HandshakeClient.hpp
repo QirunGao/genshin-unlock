@@ -4,7 +4,6 @@
 #include "shared/StatusCode.hpp"
 
 #include <cstdint>
-#include <string>
 
 #include <Windows.h>
 
@@ -24,13 +23,25 @@ public:
     StatusCode WaitForRuntimeInitResult(RuntimeInitResultMessage& response, uint32_t timeoutMs = 10000);
     StatusCode SendShutdown(const ShutdownRequestMessage& msg);
 
+    // Runtime event receiving (monitoring phase)
+    bool HasPendingData() const noexcept;
+    StatusCode PeekMessageHeader(MessageHeader& header);
+    StatusCode ReceiveHeartbeat(StatusHeartbeatMessage& msg);
+    StatusCode ReceiveHookStateChanged(HookStateChangedMessage& msg);
+    StatusCode ReceiveError(ErrorEventMessage& msg);
+
     [[nodiscard]] bool IsConnected() const noexcept;
     void Disconnect() noexcept;
 
 private:
+    template <typename T>
+    StatusCode SendPayload(MessageType type, const T& payload);
+
+    template <typename T>
+    StatusCode ReceivePayload(MessageType expectedType, T& payload);
+
     uint32_t gamePid;
     HANDLE pipeHandle = INVALID_HANDLE_VALUE;
-    std::string pipeName;
 };
 
 } // namespace z3lx::launcher

@@ -3,6 +3,7 @@
 #include "launcher/HandshakeClient.hpp"
 #include "launcher/Injector.hpp"
 #include "launcher/Logger.hpp"
+#include "launcher/ModuleValidator.hpp"
 #include "launcher/ProcessStarter.hpp"
 #include "launcher/VersionPolicy.hpp"
 #include "shared/ConfigModel.hpp"
@@ -18,6 +19,7 @@
 #include <wil/resource.h>
 #include <wil/result.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
@@ -36,6 +38,31 @@ using namespace z3lx::launcher;
 using namespace z3lx::shared;
 using namespace z3lx::util;
 } // namespace z
+
+namespace {
+
+z::ConfigSnapshotMessage BuildConfigSnapshot(
+    const z::RuntimeConfig& runtimeConfig) {
+    z::ConfigSnapshotMessage msg {};
+    msg.unlockFps = runtimeConfig.unlockFps ? 1u : 0u;
+    msg.targetFps = runtimeConfig.targetFps;
+    msg.autoThrottle = runtimeConfig.autoThrottle ? 1u : 0u;
+    msg.unlockFov = runtimeConfig.unlockFov ? 1u : 0u;
+    msg.targetFov = runtimeConfig.targetFov;
+    msg.fovSmoothing = runtimeConfig.fovSmoothing;
+    msg.unlockFovKey = static_cast<uint8_t>(runtimeConfig.unlockFovKey);
+    msg.nextFovPresetKey = static_cast<uint8_t>(runtimeConfig.nextFovPresetKey);
+    msg.prevFovPresetKey = static_cast<uint8_t>(runtimeConfig.prevFovPresetKey);
+    msg.fovPresetCount = static_cast<uint32_t>(
+        std::min(runtimeConfig.fovPresets.size(),
+                 static_cast<size_t>(z::kMaxFovPresets)));
+    for (uint32_t i = 0; i < msg.fovPresetCount; ++i) {
+        msg.fovPresets[i] = runtimeConfig.fovPresets[i];
+    }
+    return msg;
+}
+
+} // namespace
 
 int main() try {
     const auto loggingCallback = [](const wil::FailureInfo& info) noexcept {
@@ -139,6 +166,42 @@ int main() try {
         return 1;
     }
 
+    // Hash-based integrity check (dev phase — log hashes, reject on mismatch
+    // if expected hashes are configured).
+    {
+        const std::string bootstrapHash =
+            z::ComputeFileSha256(bootstrapPath);
+        const std::string runtimeHash =
+            z::ComputeFileSha256(runtimePath);
+        logger.Info("launcher", std::format(
+            "bootstrap.dll SHA-256: {}", bootstrapHash));
+        logger.Info("launcher", std::format(
+            "runtime.dll   SHA-256: {}", runtimeHash));
+
+        if (bootstrapHash.empty()) {
+            logger.Error("launcher",
+                "Failed to compute bootstrap.dll hash");
+            z::ShowMessageBox(
+                "Launcher",
+                "Module integrity check failed for bootstrap.dll.",
+                z::MessageBoxIcon::Error,
+                z::MessageBoxButton::Ok
+            );
+            return 1;
+        }
+        if (runtimeHash.empty()) {
+            logger.Error("launcher",
+                "Failed to compute runtime.dll hash");
+            z::ShowMessageBox(
+                "Launcher",
+                "Module integrity check failed for runtime.dll.",
+                z::MessageBoxIcon::Error,
+                z::MessageBoxButton::Ok
+            );
+            return 1;
+        }
+    }
+
     // Step 4: Check version compatibility
     std::println(std::cout, "Checking compatibility...");
     logger.Info("launcher", "Checking version compatibility");
@@ -175,7 +238,7 @@ int main() try {
     const wil::unique_handle process { ctx.processHandle };
     const wil::unique_handle thread { ctx.threadHandle };
 
-    // Step 6: Inject bootstrap.dll via CreateRemoteThread
+    // Step 6: Inject bootstrap.dll via CreateRemoteThread + LoadLibraryW
     logger.Info("launcher", "Injecting bootstrap.dll");
     const z::StatusCode injectStatus = z::InjectBootstrap(
         process.get(), bootstrapPath);
@@ -191,55 +254,174 @@ int main() try {
         return 1;
     }
 
-    // Step 7: Wait for bootstrap ready via IPC
-    logger.Info("launcher", "Waiting for bootstrap handshake");
-    z::HandshakeClient handshake { ctx.processId };
-    if (handshake.Connect() != z::StatusCode::Ok) {
-        logger.Warn("launcher", "IPC connection not available, resuming directly");
-    } else {
-        z::HelloMessage hello {};
-        hello.session.launcherPid = GetCurrentProcessId();
-        hello.session.gamePid = ctx.processId;
-        hello.session.toolVersion = toolVersion.ToString();
-        hello.session.protocolVersion = z::kProtocolVersion;
-        handshake.SendHello(hello);
-
-        z::BootstrapReadyMessage bootstrapReady {};
-        handshake.WaitForBootstrapReady(bootstrapReady);
-
-        // Step 8: Send runtime configuration snapshot
-        logger.Info("launcher", "Sending runtime configuration");
-        z::ConfigSnapshotMessage configMsg {};
-        configMsg.unlockFps = runtimeConfig.unlockFps;
-        configMsg.targetFps = runtimeConfig.targetFps;
-        configMsg.autoThrottle = runtimeConfig.autoThrottle;
-        configMsg.unlockFov = runtimeConfig.unlockFov;
-        configMsg.targetFov = runtimeConfig.targetFov;
-        configMsg.fovSmoothing = runtimeConfig.fovSmoothing;
-        handshake.SendConfigSnapshot(configMsg);
-
-        // Step 9: Wait for runtime init result
-        z::RuntimeInitResultMessage runtimeResult {};
-        handshake.WaitForRuntimeInitResult(runtimeResult);
-        if (runtimeResult.status != z::StatusCode::Ok) {
-            logger.Warn("launcher",
-                std::format("Runtime init returned: {}",
-                    z::StatusCodeToString(runtimeResult.status)));
-        }
+    // Step 7: Call BootstrapEntryPoint remotely (non-blocking)
+    logger.Info("launcher", "Calling BootstrapEntryPoint remotely");
+    const z::StatusCode callStatus = z::CallBootstrapEntry(
+        process.get(), ctx.processId, bootstrapPath);
+    if (callStatus != z::StatusCode::Ok) {
+        logger.Error("launcher", "Failed to call BootstrapEntryPoint");
+        TerminateProcess(process.get(), 1);
+        z::ShowMessageBox(
+            "Launcher",
+            "Failed to initialize bootstrap in game process.",
+            z::MessageBoxIcon::Error,
+            z::MessageBoxButton::Ok
+        );
+        return 1;
     }
 
-    // Step 10: Resume game main thread
+    // Step 8: IPC handshake (fail-closed — abort on any failure)
+    logger.Info("launcher", "Connecting to bootstrap IPC");
+    z::HandshakeClient handshake { ctx.processId };
+    if (handshake.Connect() != z::StatusCode::Ok) {
+        logger.Error("launcher", "IPC connection failed");
+        TerminateProcess(process.get(), 1);
+        z::ShowMessageBox(
+            "Launcher",
+            "Failed to establish IPC connection with bootstrap.",
+            z::MessageBoxIcon::Error,
+            z::MessageBoxButton::Ok
+        );
+        return 1;
+    }
+
+    // Send Hello
+    z::HelloMessage hello {};
+    hello.session.launcherPid = GetCurrentProcessId();
+    hello.session.gamePid = ctx.processId;
+    z::CopyToFixedString(hello.session.toolVersion,
+        sizeof(hello.session.toolVersion),
+        toolVersion.ToString().c_str());
+    hello.session.protocolVersion = z::kProtocolVersion;
+    if (handshake.SendHello(hello) != z::StatusCode::Ok) {
+        logger.Error("launcher", "Failed to send Hello");
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
+
+    // Wait for BootstrapReady
+    z::BootstrapReadyMessage bootstrapReady {};
+    if (handshake.WaitForBootstrapReady(bootstrapReady) != z::StatusCode::Ok) {
+        logger.Error("launcher", "Bootstrap ready handshake failed");
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
+    if (bootstrapReady.status != z::StatusCode::Ok) {
+        logger.Error("launcher", std::format("Bootstrap reported error: {}",
+            z::StatusCodeToString(bootstrapReady.status)));
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
+    logger.Info("launcher", std::format("Host validated: {}",
+        bootstrapReady.hostModuleName));
+
+    // Send config snapshot
+    logger.Info("launcher", "Sending runtime configuration");
+    const z::ConfigSnapshotMessage configMsg = BuildConfigSnapshot(runtimeConfig);
+    if (handshake.SendConfigSnapshot(configMsg) != z::StatusCode::Ok) {
+        logger.Error("launcher", "Failed to send config snapshot");
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
+
+    // Wait for RuntimeInitResult
+    z::RuntimeInitResultMessage runtimeResult {};
+    if (handshake.WaitForRuntimeInitResult(runtimeResult) != z::StatusCode::Ok) {
+        logger.Error("launcher", "Failed to receive runtime init result");
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
+    if (runtimeResult.status != z::StatusCode::Ok) {
+        logger.Error("launcher",
+            std::format("Runtime init failed: {}",
+                z::StatusCodeToString(runtimeResult.status)));
+        TerminateProcess(process.get(), 1);
+        z::ShowMessageBox(
+            "Launcher",
+            std::format("Runtime initialization failed: {}",
+                z::StatusCodeToString(runtimeResult.status)),
+            z::MessageBoxIcon::Error,
+            z::MessageBoxButton::Ok
+        );
+        return 1;
+    }
+    logger.Info("launcher", std::format(
+        "Runtime initialized — FPS: {}, FOV: {}",
+        runtimeResult.fpsAvailable ? "available" : "unavailable",
+        runtimeResult.fovAvailable ? "available" : "unavailable"));
+
+    // Step 9: Resume game main thread
     logger.Info("launcher", "Resuming game main thread");
     ResumeThread(thread.get());
 
     std::println(std::cout, "Game process started successfully");
     logger.Info("launcher", "Game process started successfully");
 
-    // Step 11: Enter monitoring loop (optional, exit after short delay)
+    // Step 10: Monitoring loop — read heartbeat / hook-state / error
+    //          events while waiting for the game process to exit.
     if (!launcherConfig.closeLauncherOnSuccess) {
-        std::this_thread::sleep_for(std::chrono::seconds { 3 });
+        logger.Info("launcher", "Entering monitoring loop");
+        while (true) {
+            const DWORD waitResult = WaitForSingleObject(
+                process.get(), 1000);
+            if (waitResult == WAIT_OBJECT_0) {
+                DWORD exitCode = 0;
+                GetExitCodeProcess(process.get(), &exitCode);
+                logger.Info("launcher", std::format(
+                    "Game process exited with code {}", exitCode));
+                break;
+            }
+
+            // Process pending IPC events from the runtime
+            for (bool reading = true; reading && handshake.HasPendingData();) {
+                z::MessageHeader header {};
+                if (handshake.PeekMessageHeader(header)
+                        != z::StatusCode::Ok) {
+                    break;
+                }
+                switch (header.type) {
+                case z::MessageType::StatusHeartbeat: {
+                    z::StatusHeartbeatMessage hb {};
+                    if (handshake.ReceiveHeartbeat(hb)
+                            == z::StatusCode::Ok) {
+                        logger.Info("runtime", std::format(
+                            "Heartbeat: state={}, fps={}, fov={}, uptime={}s",
+                            hb.runtimeState, hb.fpsActive,
+                            hb.fovActive, hb.uptimeSeconds));
+                    }
+                    break;
+                }
+                case z::MessageType::HookStateChanged: {
+                    z::HookStateChangedMessage hookMsg {};
+                    if (handshake.ReceiveHookStateChanged(hookMsg)
+                            == z::StatusCode::Ok) {
+                        logger.Info("runtime", std::format(
+                            "Hook '{}': installed={}, enabled={}",
+                            hookMsg.hookName, hookMsg.installed,
+                            hookMsg.enabled));
+                    }
+                    break;
+                }
+                case z::MessageType::ErrorEvent: {
+                    z::ErrorEventMessage errMsg {};
+                    if (handshake.ReceiveError(errMsg)
+                            == z::StatusCode::Ok) {
+                        logger.Error("runtime", std::format(
+                            "Error in '{}': {} (sys={})",
+                            errMsg.moduleName, errMsg.message,
+                            errMsg.systemError));
+                    }
+                    break;
+                }
+                default:
+                    reading = false;
+                    break;
+                }
+            }
+        }
     }
 
+    handshake.Disconnect();
     return 0;
 } catch (const std::exception& e) {
     LOG_CAUGHT_EXCEPTION();

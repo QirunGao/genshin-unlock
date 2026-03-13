@@ -21,4 +21,7 @@ struct BootstrapInitResult {
 extern "C" __declspec(dllexport)
 BootstrapInitResult BootstrapInitialize(const BootstrapInitParams* params);
 
+extern "C" __declspec(dllexport)
+DWORD WINAPI BootstrapEntryPoint(LPVOID param);
+
 } // namespace z3lx::bootstrap

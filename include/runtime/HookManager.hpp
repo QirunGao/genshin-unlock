@@ -15,6 +15,11 @@ struct HookDefinition {
     std::string name;
     void* target = nullptr;
     void* detour = nullptr;
+    // Lifecycle callbacks — HookManager delegates actual install/enable
+    // to the owning service through these.
+    std::function<bool()> installFn;              // returns true on success
+    std::function<void()> uninstallFn;
+    std::function<void(bool)> setEnabledFn;       // enable(true) / disable(false)
 };
 
 struct HookEntry {
@@ -29,6 +34,14 @@ public:
     ~HookManager() noexcept;
 
     StatusCode Register(const HookDefinition& definition);
+
+    // Convenience: register a named hook with no target/detour (state-only)
+    StatusCode RegisterHook(const std::string& name);
+
+    // Convenience: set installed/enabled state directly
+    StatusCode SetHookState(const std::string& name,
+        bool installed, bool enabled);
+
     StatusCode InstallAll();
     StatusCode UninstallAll();
 

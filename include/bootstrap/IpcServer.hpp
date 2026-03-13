@@ -4,7 +4,6 @@
 #include "shared/StatusCode.hpp"
 
 #include <cstdint>
-#include <string>
 
 #include <Windows.h>
 
@@ -28,12 +27,18 @@ public:
     StatusCode SendError(const ErrorEventMessage& error);
 
     [[nodiscard]] bool IsConnected() const noexcept;
+    [[nodiscard]] HANDLE ReleaseHandle() noexcept;
     void Close() noexcept;
 
 private:
+    template <typename T>
+    StatusCode SendPayload(MessageType type, const T& payload);
+
+    template <typename T>
+    StatusCode ReceivePayload(MessageType expectedType, T& payload);
+
     uint32_t gamePid;
     HANDLE pipeHandle = INVALID_HANDLE_VALUE;
-    std::string pipeName;
 };
 
 } // namespace z3lx::bootstrap
