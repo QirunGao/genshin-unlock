@@ -211,6 +211,10 @@ static void RuntimeLoop(RuntimeContext& ctx) {
     const auto prevPresetKey = static_cast<VK>(ctx.config.prevFovPresetKey);
 
     uint32_t tickCount = 0;
+    // Clamp preset count to array bounds
+    const auto presetCount = std::min(
+        ctx.config.fovPresetCount,
+        static_cast<uint32_t>(shared::kMaxFovPresets));
 
     while (!ctx.state.IsTerminal()) {
         ctx.inputSampler.Sample();
@@ -225,9 +229,8 @@ static void RuntimeLoop(RuntimeContext& ctx) {
             ctx.fovService.SetEnabled(nowEnabled);
         } else if (ctx.config.unlockFov != 0) {
             if (ctx.inputSampler.IsKeyDown(nextPresetKey) &&
-                ctx.config.fovPresetCount > 0) {
-                const auto count =
-                    static_cast<int32_t>(ctx.config.fovPresetCount);
+                presetCount > 0) {
+                const auto count = static_cast<int32_t>(presetCount);
                 int32_t nextFov = ctx.config.fovPresets[0];
                 for (int32_t i = 0; i < count; ++i) {
                     if (ctx.config.fovPresets[i] > ctx.config.targetFov) {
@@ -238,9 +241,8 @@ static void RuntimeLoop(RuntimeContext& ctx) {
                 ctx.config.targetFov = nextFov;
                 ctx.fovService.SetTargetFov(nextFov);
             } else if (ctx.inputSampler.IsKeyDown(prevPresetKey) &&
-                       ctx.config.fovPresetCount > 0) {
-                const auto count =
-                    static_cast<int32_t>(ctx.config.fovPresetCount);
+                       presetCount > 0) {
+                const auto count = static_cast<int32_t>(presetCount);
                 int32_t prevFov = ctx.config.fovPresets[count - 1];
                 for (int32_t i = count - 1; i >= 0; --i) {
                     if (ctx.config.fovPresets[i] < ctx.config.targetFov) {

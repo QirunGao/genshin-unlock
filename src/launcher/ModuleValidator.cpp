@@ -58,7 +58,13 @@ std::string ComputeFileSha256(const std::filesystem::path& filePath) {
     DWORD bytesRead = 0;
     while (ReadFile(fileHandle, buffer.data(), kChunkSize,
                &bytesRead, nullptr) && bytesRead > 0) {
-        BCryptHashData(hashHandle, buffer.data(), bytesRead, 0);
+        status = BCryptHashData(hashHandle, buffer.data(), bytesRead, 0);
+        if (!BCRYPT_SUCCESS(status)) {
+            CloseHandle(fileHandle);
+            BCryptDestroyHash(hashHandle);
+            BCryptCloseAlgorithmProvider(algHandle, 0);
+            return {};
+        }
     }
     CloseHandle(fileHandle);
 
