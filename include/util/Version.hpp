@@ -24,6 +24,7 @@ public:
     [[nodiscard]] std::string ToString() const;
 
     std::strong_ordering operator<=>(const Version& other) const noexcept;
+    bool operator==(const Version& other) const noexcept;
 
 private:
     uint16_t major;

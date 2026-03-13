@@ -224,5 +224,3 @@ static void RuntimeLoop(RuntimeContext& ctx) {
 }
 
 } // namespace z3lx::runtime
-
-} // namespace z3lx::runtime

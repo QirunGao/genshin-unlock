@@ -17,26 +17,16 @@ bool VersionTable::IsSupported(const util::Version& gameVersion) const noexcept 
 
 std::optional<ResolverProfile> VersionTable::GetProfile(
     const util::Version& gameVersion) const noexcept {
-    // First try exact match (major.minor.patch.build)
-    auto it = std::ranges::find_if(entries,
+    // Strict exact match only — unknown versions are rejected
+    const auto it = std::ranges::find_if(entries,
         [&](const VersionEntry& e) {
             return e.gameVersion == gameVersion;
         });
-
-    // Fallback to major.minor.patch match
-    if (it == entries.end()) {
-        it = std::ranges::find_if(entries,
-            [&](const VersionEntry& e) {
-                return e.gameVersion.GetMajor() == gameVersion.GetMajor() &&
-                       e.gameVersion.GetMinor() == gameVersion.GetMinor() &&
-                       e.gameVersion.GetPatch() == gameVersion.GetPatch();
-            });
-    }
     if (it == entries.end()) {
         return std::nullopt;
     }
 
-    auto profileIt = std::ranges::find_if(profiles,
+    const auto profileIt = std::ranges::find_if(profiles,
         [&](const ResolverProfile& p) {
             return p.profileId == it->resolverProfileId;
         });
