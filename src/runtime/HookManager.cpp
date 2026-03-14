@@ -1,7 +1,5 @@
 #include "runtime/HookManager.hpp"
 
-import mmh;
-
 #include <algorithm>
 #include <ranges>
 #include <string>
@@ -14,6 +12,7 @@ HookManager::~HookManager() noexcept {
 }
 
 StatusCode HookManager::Register(const HookDefinition& definition) {
+    std::lock_guard lock { mutex };
     hooks.push_back(HookEntry {
         .definition = definition,
         .installed = false,
@@ -28,6 +27,7 @@ StatusCode HookManager::RegisterHook(const std::string& name) {
 
 StatusCode HookManager::SetHookState(const std::string& name,
     const bool installed, const bool enabled) {
+    std::lock_guard lock { mutex };
     auto it = std::ranges::find_if(hooks,
         [&](const HookEntry& e) { return e.definition.name == name; });
     if (it == hooks.end()) return StatusCode::HookInstallFailed;
@@ -41,23 +41,31 @@ StatusCode HookManager::SetHookState(const std::string& name,
 }
 
 StatusCode HookManager::InstallAll() {
-    for (auto& entry : hooks) {
+    std::lock_guard lock { mutex };
+    bool anyInstalled = false;
+    for (size_t i = 0; i < hooks.size(); ++i) {
+        auto& entry = hooks[i];
         if (entry.installed) continue;
-        // Use lifecycle callback if provided, otherwise use target+detour presence.
+
         if (entry.definition.installFn) {
             entry.installed = entry.definition.installFn();
         } else if (entry.definition.target && entry.definition.detour) {
             entry.installed = true;
         }
-        if (entry.installed && stateChangeCallback) {
+        if (entry.installed) {
+            anyInstalled = true;
+        }
+
+        if (stateChangeCallback) {
             stateChangeCallback(
                 entry.definition.name, entry.installed, entry.enabled);
         }
     }
-    return StatusCode::Ok;
+    return anyInstalled ? StatusCode::Ok : StatusCode::HookInstallFailed;
 }
 
 StatusCode HookManager::UninstallAll() {
+    std::lock_guard lock { mutex };
     for (auto& entry : hooks) {
         if (entry.definition.uninstallFn && entry.installed) {
             entry.definition.uninstallFn();
@@ -73,6 +81,7 @@ StatusCode HookManager::UninstallAll() {
 }
 
 StatusCode HookManager::Enable(const std::string& name) {
+    std::lock_guard lock { mutex };
     auto it = std::ranges::find_if(hooks,
         [&](const HookEntry& e) { return e.definition.name == name; });
     if (it == hooks.end()) return StatusCode::HookInstallFailed;
@@ -89,6 +98,7 @@ StatusCode HookManager::Enable(const std::string& name) {
 }
 
 StatusCode HookManager::Disable(const std::string& name) {
+    std::lock_guard lock { mutex };
     auto it = std::ranges::find_if(hooks,
         [&](const HookEntry& e) { return e.definition.name == name; });
     if (it == hooks.end()) return StatusCode::HookInstallFailed;
@@ -104,6 +114,7 @@ StatusCode HookManager::Disable(const std::string& name) {
 }
 
 StatusCode HookManager::EnableAll() {
+    std::lock_guard lock { mutex };
     for (auto& entry : hooks) {
         if (entry.installed) {
             entry.enabled = true;
@@ -120,6 +131,7 @@ StatusCode HookManager::EnableAll() {
 }
 
 StatusCode HookManager::DisableAll() {
+    std::lock_guard lock { mutex };
     for (auto& entry : hooks) {
         entry.enabled = false;
         if (entry.definition.setEnabledFn) {
@@ -134,18 +146,21 @@ StatusCode HookManager::DisableAll() {
 }
 
 bool HookManager::IsInstalled(const std::string& name) const noexcept {
+    std::lock_guard lock { mutex };
     auto it = std::ranges::find_if(hooks,
         [&](const HookEntry& e) { return e.definition.name == name; });
     return it != hooks.end() && it->installed;
 }
 
 bool HookManager::IsEnabled(const std::string& name) const noexcept {
+    std::lock_guard lock { mutex };
     auto it = std::ranges::find_if(hooks,
         [&](const HookEntry& e) { return e.definition.name == name; });
     return it != hooks.end() && it->enabled;
 }
 
 void HookManager::SetStateChangeCallback(StateChangeCallback callback) {
+    std::lock_guard lock { mutex };
     stateChangeCallback = std::move(callback);
 }
 

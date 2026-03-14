@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string_view>
 
@@ -46,7 +47,7 @@ public:
     [[nodiscard]] bool IsTerminal() const noexcept;
 
 private:
-    State currentState;
+    std::atomic<State> currentState;
 };
 
 } // namespace z3lx::runtime

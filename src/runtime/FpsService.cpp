@@ -6,6 +6,21 @@
 
 namespace z3lx::runtime {
 
+namespace {
+
+constexpr int kUnlimitedFps = -1;
+constexpr int kMinTargetFps = 1;
+constexpr int kMaxTargetFps = 1000;
+
+int SanitizeTargetFps(const int fps) noexcept {
+    if (fps == kUnlimitedFps) {
+        return fps;
+    }
+    return (std::clamp)(fps, kMinTargetFps, kMaxTargetFps);
+}
+
+} // namespace
+
 FpsService::FpsService() noexcept = default;
 FpsService::~FpsService() noexcept = default;
 
@@ -18,12 +33,18 @@ StatusCode FpsService::Initialize(int* targetFpsAddress) {
     return StatusCode::Ok;
 }
 
+void FpsService::Shutdown() noexcept {
+    enabled = false;
+    available = false;
+    targetFpsPtr = nullptr;
+}
+
 void FpsService::SetEnabled(const bool enable) noexcept {
     enabled = enable;
 }
 
 void FpsService::SetTargetFps(const int fps) noexcept {
-    targetFps = fps;
+    targetFps = SanitizeTargetFps(fps);
 }
 
 void FpsService::SetAutoThrottle(const bool enable) noexcept {
@@ -35,10 +56,11 @@ void FpsService::Update() noexcept {
         return;
     }
 
+    const int requestedFps = SanitizeTargetFps(targetFps);
     if (autoThrottle) {
-        ApplyThrottling();
+        *targetFpsPtr = ApplyThrottling(requestedFps);
     } else {
-        *targetFpsPtr = targetFps;
+        *targetFpsPtr = requestedFps;
     }
 }
 
@@ -54,10 +76,10 @@ int FpsService::GetTargetFps() const noexcept {
     return targetFps;
 }
 
-void FpsService::ApplyThrottling() noexcept {
+int FpsService::ApplyThrottling(const int requestedFps) const noexcept {
     const HWND foregroundWindow = GetForegroundWindow();
     if (!foregroundWindow) {
-        return;
+        return requestedFps;
     }
 
     DWORD foregroundProcessId = 0;
@@ -66,13 +88,13 @@ void FpsService::ApplyThrottling() noexcept {
     const bool isFocused = (foregroundProcessId == currentProcessId);
 
     constexpr int idleTargetFps = 10;
-    *targetFpsPtr = isFocused
-        ? targetFps
-        : (std::min)(targetFps, idleTargetFps);
-
-    const DWORD priority = isFocused
-        ? NORMAL_PRIORITY_CLASS : IDLE_PRIORITY_CLASS;
-    SetPriorityClass(GetCurrentProcess(), priority);
+    if (isFocused) {
+        return requestedFps;
+    }
+    if (requestedFps == kUnlimitedFps) {
+        return idleTargetFps;
+    }
+    return (std::min)(requestedFps, idleTargetFps);
 }
 
 } // namespace z3lx::runtime

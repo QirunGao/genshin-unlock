@@ -4,6 +4,7 @@ project(genshin-unlock
 )
 
 set(CMAKE_CXX_STANDARD 23)
+enable_testing()
 
 if (NOT MSVC)
     message(FATAL_ERROR "This project requires MSVC to build.")
@@ -144,6 +145,7 @@ target_include_directories(bootstrap
     PRIVATE src
 )
 target_link_libraries(bootstrap
+    PRIVATE bcrypt
     PRIVATE WIL::WIL
     PRIVATE util
     PRIVATE shared
@@ -164,3 +166,34 @@ target_link_libraries(runtime
     PRIVATE util
     PRIVATE shared
 )
+
+add_custom_target(module_hash_manifest ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DOUTPUT_DIR=$<TARGET_FILE_DIR:launcher>
+        -DLAUNCHER_PATH=$<TARGET_FILE:launcher>
+        -DBOOTSTRAP_PATH=$<TARGET_FILE:bootstrap>
+        -DRUNTIME_PATH=$<TARGET_FILE:runtime>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteModuleHashes.cmake
+    DEPENDS launcher bootstrap runtime
+    COMMENT "Writing module hash manifest"
+)
+
+add_executable(core_tests
+    tests/CoreTests.cpp
+    src/runtime/RuntimeState.cpp
+    src/runtime/HookManager.cpp
+    src/runtime/FpsService.cpp
+    src/launcher/AppConfig.cpp
+)
+target_include_directories(core_tests
+    PRIVATE include
+    PRIVATE src
+)
+target_link_libraries(core_tests
+    PRIVATE glaze::glaze
+    PRIVATE WIL::WIL
+    PRIVATE util
+    PRIVATE shared
+)
+
+add_test(NAME core_tests COMMAND core_tests)

@@ -31,8 +31,16 @@ util::Version ReadGameVersion(const std::filesystem::path& gamePath) {
 
     const std::filesystem::path configFilePath =
         gamePath.parent_path() / "config.ini";
-    const wil::unique_hfile configFile =
-        wil::open_or_create_file(configFilePath.c_str());
+    const wil::unique_hfile configFile { CreateFileW(
+        configFilePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    ) };
+    THROW_LAST_ERROR_IF(!configFile.is_valid());
     const std::string content =
         util::ReadFile<std::string>(configFile.get());
 
@@ -64,12 +72,7 @@ void CheckVersionCompatibility(
     const util::Version& toolVersion,
     const util::Version& gameVersion,
     const VersionTable& table) {
-    if (toolVersion.GetMajor() != gameVersion.GetMajor() ||
-        toolVersion.GetMinor() != gameVersion.GetMinor()) {
-        throw std::runtime_error(std::format(
-            "Tool version {} is not compatible with game version {}",
-            toolVersion.ToString(), gameVersion.ToString()));
-    }
+    (void)toolVersion;
     if (!table.IsSupported(gameVersion)) {
         throw std::runtime_error(std::format(
             "Game version {} is not in the supported version whitelist",

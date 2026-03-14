@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 - Integrates with in-game sequenced FOV changes (e.g., bursts, cutscenes)
 - Uses keybindings to easily toggle FOV unlock and switch between presets
 - Customizable game launch arguments and display settings
-- Compatible with [GIMI](https://github.com/SilentNightSound/GI-Model-Importer) and associated mods
+- Uses a dedicated `launcher.exe -> bootstrap.dll -> runtime.dll` chain with fail-closed startup checks
 - Not fully compatible with the PC controller layout
 
 ## Disclaimer
@@ -29,29 +29,24 @@ While I have used this mod since its conception without issues, it is important 
 Due to the nature of the mod's implementation, it may be flagged by antivirus software as a false positive. If you encounter such issues during the installation process, consider adding the mod to your antivirus's exclusion list.
 
 1. Download `mod.zip` from the [latest release](https://github.com/z3lx/genshin-unlock/releases/latest) and extract it
-2. Run `loader.exe` from the extracted folder
-3. Wait for the game to launch
-4. (Optional) Configure the mod's behavior by editing the configuration files
+2. Keep `launcher.exe`, `bootstrap.dll`, `runtime.dll`, and `module_hashes.json` in the same folder
+3. (Optional) Configure the mod by editing `launcher_config.json` and `runtime_config.json`
+4. Run `launcher.exe`
+5. Wait for the game to launch
 
 Once the mod is active in-game:
 - Use the <kbd>←</kbd> and <kbd>→</kbd> keys to cycle through the FOV presets
 - Use the <kbd>↓</kbd> key to toggle the FOV unlocking
 
-To use the mod with [GIMI](https://github.com/SilentNightSound/GI-Model-Importer):
-1. Open the `loader_config.json` file with a text editor
-2. Add GIMI's `d3d11.dll` path to the `dllPaths` array
-```json
-"dllPaths": [
-    "plugin.dll",
-    "C:\\path\\to\\GIMI\\d3d11.dll"
-],
-```
+The launcher writes logs to `logs/launcher.log` by default. When `closeLauncherOnSuccess` is `false`, it stays open to monitor runtime status, heartbeats, hook state changes, and shutdown events.
+
+The current architecture no longer supports arbitrary `dllPaths` injection. The launcher only loads the bundled `bootstrap.dll` and `runtime.dll` from its own directory after validating their hashes.
 
 ## Configuration
 
-The mod's behavior can optionally be customized through the `loader_config.json` and `plugin_config.json` files, described below.
+The mod's behavior can optionally be customized through the `launcher_config.json` and `runtime_config.json` files, described below.
 
-### Loader
+### Launcher
 
 | Key              | Type       | Description                                             |
 |------------------|------------|---------------------------------------------------------|
@@ -63,8 +58,8 @@ The mod's behavior can optionally be customized through the `loader_config.json`
 | `screenHeight`   | `int`      | Height of the game window in pixels                     |
 | `mobilePlatform` | `bool`     | Enables mobile UI                                       |
 | `additionalArgs` | `string`   | Additional arguments to pass to the game executable     |
-| `dllPaths`       | `string[]` | List of DLLs to inject with the game                    |
-| `suspendLoad`    | `bool`     | Suspends the game process until the mod is fully loaded |
+| `closeLauncherOnSuccess` | `bool` | Closes the launcher after startup instead of monitoring the runtime |
+| `logLevel`       | `string`   | Minimum launcher log level: `trace`, `debug`, `info`, `warn`, `error`, or `fatal` |
 
 <details>
 
@@ -78,7 +73,7 @@ The mod's behavior can optionally be customized through the `loader_config.json`
 
 </details>
 
-Default loader configuration:
+Default launcher configuration:
 
 ```json
 {
@@ -90,19 +85,17 @@ Default loader configuration:
     "screenHeight": 1080,
     "mobilePlatform": false,
     "additionalArgs": "",
-    "dllPaths": [
-        "plugin.dll"
-    ],
-    "suspendLoad": false
+    "closeLauncherOnSuccess": false,
+    "logLevel": "info"
 }
 ```
 
-### Plugin
+### Runtime
 
 | Key                | Type     | Description                                           |
 |--------------------|----------|-------------------------------------------------------|
 | `unlockFps`        | `bool`   | Enables frame rate (FPS) unlocking                    |
-| `targetFps`        | `int`    | Target frame rate when FPS is unlocked                |
+| `targetFps`        | `int`    | Target frame rate when FPS is unlocked. Use `-1` for the unlimited sentinel |
 | `autoThrottle`     | `bool`   | Limits FPS and lowers process priority when unfocused |
 | `unlockFov`        | `bool`   | Enables field of view (FOV) unlocking                 |
 | `targetFov`        | `int`    | Default FOV applied at startup                        |
@@ -249,7 +242,7 @@ Default loader configuration:
 
 </details>
 
-Default plugin configuration:
+Default runtime configuration:
 
 ```json
 {

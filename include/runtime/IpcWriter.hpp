@@ -28,18 +28,28 @@ public:
 
     void SetHandle(HANDLE pipeHandle) noexcept;
 
+    StatusCode SendConfigApplyResult(const ConfigApplyResultMessage& msg);
+    StatusCode SendControlPlaneReady(const ControlPlaneReadyMessage& msg);
+    StatusCode SendStateChanged(const StateChangedMessage& msg);
     StatusCode SendHeartbeat(const StatusHeartbeatMessage& msg);
     StatusCode SendHookStateChanged(const HookStateChangedMessage& msg);
+    StatusCode SendLogEvent(const LogEventMessage& msg);
     StatusCode SendError(const ErrorEventMessage& msg);
 
+    bool HasPendingData() const noexcept;
+    StatusCode PeekMessageHeader(MessageHeader& header);
+    StatusCode ReceiveShutdown(ShutdownRequestMessage& msg);
     [[nodiscard]] bool IsConnected() const noexcept;
 
 private:
     template <typename T>
     StatusCode SendPayload(MessageType type, const T& payload);
 
+    template <typename T>
+    StatusCode ReceivePayload(MessageType expectedType, T& payload);
+
     HANDLE pipeHandle = INVALID_HANDLE_VALUE;
-    std::unique_ptr<std::mutex> mutex;
+    mutable std::unique_ptr<std::mutex> mutex;
 };
 
 } // namespace z3lx::runtime

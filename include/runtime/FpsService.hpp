@@ -14,6 +14,7 @@ public:
     ~FpsService() noexcept;
 
     StatusCode Initialize(int* targetFpsAddress);
+    void Shutdown() noexcept;
 
     void SetEnabled(bool enabled) noexcept;
     void SetTargetFps(int fps) noexcept;
@@ -32,7 +33,7 @@ private:
     int targetFps = 60;
     int* targetFpsPtr = nullptr;
 
-    void ApplyThrottling() noexcept;
+    [[nodiscard]] int ApplyThrottling(int requestedFps) const noexcept;
 };
 
 } // namespace z3lx::runtime

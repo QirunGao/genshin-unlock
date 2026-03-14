@@ -1,8 +1,10 @@
 #include "launcher/HandshakeClient.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <format>
 #include <string>
+#include <thread>
 
 #include <Windows.h>
 
@@ -83,13 +85,51 @@ StatusCode HandshakeClient::ReceivePayload(
     return StatusCode::Ok;
 }
 
+template <typename T>
+StatusCode HandshakeClient::ReceivePayloadWithTimeout(
+    const MessageType expectedType, T& payload, const uint32_t timeoutMs) {
+    if (!IsConnected()) return StatusCode::IpcDisconnected;
+
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    while (true) {
+        MessageHeader header {};
+        DWORD bytesRead = 0;
+        DWORD bytesAvailable = 0;
+        if (!PeekNamedPipe(pipeHandle, &header, sizeof(header),
+                &bytesRead, &bytesAvailable, nullptr)) {
+            return StatusCode::IpcDisconnected;
+        }
+
+        if (bytesRead >= sizeof(header)) {
+            if (header.type != expectedType || header.payloadSize != sizeof(T)) {
+                return StatusCode::IpcDisconnected;
+            }
+            if (bytesAvailable >= sizeof(header) + sizeof(T)) {
+                return ReceivePayload(expectedType, payload);
+            }
+        }
+
+        if (GetTickCount64() >= deadline) {
+            return StatusCode::IpcDisconnected;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
 StatusCode HandshakeClient::SendHello(const HelloMessage& msg) {
     return SendPayload(MessageType::Hello, msg);
 }
 
 StatusCode HandshakeClient::WaitForBootstrapReady(
-    BootstrapReadyMessage& response, const uint32_t /*timeoutMs*/) {
-    return ReceivePayload(MessageType::BootstrapReady, response);
+    BootstrapReadyMessage& response, const uint32_t timeoutMs) {
+    return ReceivePayloadWithTimeout(
+        MessageType::BootstrapReady, response, timeoutMs);
+}
+
+StatusCode HandshakeClient::SendRuntimeLoadRequest(
+    const RuntimeLoadRequestMessage& request) {
+    return SendPayload(MessageType::RuntimeLoadRequest, request);
 }
 
 StatusCode HandshakeClient::SendConfigSnapshot(
@@ -98,8 +138,21 @@ StatusCode HandshakeClient::SendConfigSnapshot(
 }
 
 StatusCode HandshakeClient::WaitForRuntimeInitResult(
-    RuntimeInitResultMessage& response, const uint32_t /*timeoutMs*/) {
-    return ReceivePayload(MessageType::RuntimeInitResult, response);
+    RuntimeInitResultMessage& response, const uint32_t timeoutMs) {
+    return ReceivePayloadWithTimeout(
+        MessageType::RuntimeInitResult, response, timeoutMs);
+}
+
+StatusCode HandshakeClient::WaitForConfigApplyResult(
+    ConfigApplyResultMessage& response, const uint32_t timeoutMs) {
+    return ReceivePayloadWithTimeout(
+        MessageType::ConfigApplyResult, response, timeoutMs);
+}
+
+StatusCode HandshakeClient::WaitForControlPlaneReady(
+    ControlPlaneReadyMessage& response, const uint32_t timeoutMs) {
+    return ReceivePayloadWithTimeout(
+        MessageType::ControlPlaneReady, response, timeoutMs);
 }
 
 StatusCode HandshakeClient::SendShutdown(const ShutdownRequestMessage& msg) {
@@ -124,7 +177,8 @@ StatusCode HandshakeClient::PeekMessageHeader(MessageHeader& header) {
             &bytesRead, &bytesAvailable, nullptr)) {
         return StatusCode::IpcDisconnected;
     }
-    if (bytesRead < sizeof(header)) {
+    if (bytesRead < sizeof(header) ||
+        bytesAvailable < sizeof(header) + header.payloadSize) {
         return StatusCode::IpcDisconnected;
     }
     return StatusCode::Ok;
@@ -134,9 +188,17 @@ StatusCode HandshakeClient::ReceiveHeartbeat(StatusHeartbeatMessage& msg) {
     return ReceivePayload(MessageType::StatusHeartbeat, msg);
 }
 
+StatusCode HandshakeClient::ReceiveStateChanged(StateChangedMessage& msg) {
+    return ReceivePayload(MessageType::StateChanged, msg);
+}
+
 StatusCode HandshakeClient::ReceiveHookStateChanged(
     HookStateChangedMessage& msg) {
     return ReceivePayload(MessageType::HookStateChanged, msg);
+}
+
+StatusCode HandshakeClient::ReceiveLogEvent(LogEventMessage& msg) {
+    return ReceivePayload(MessageType::LogEvent, msg);
 }
 
 StatusCode HandshakeClient::ReceiveError(ErrorEventMessage& msg) {

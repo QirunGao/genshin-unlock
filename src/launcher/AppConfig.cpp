@@ -134,11 +134,11 @@ struct glz::meta<z3lx::shared::RuntimeConfig> {
 
     static constexpr auto fpsConstraintCond = [](
         const T&, const int fps) -> bool {
-        return fps >= -1;
+        return fps == -1 || (fps >= 1 && fps <= 1000);
     };
     static constexpr auto fpsConstraint = read_constraint<
         &T::targetFps, fpsConstraintCond,
-        "Target FPS must be -1 or greater"
+        "Target FPS must be -1 or between 1 and 1000"
     >;
 
     static constexpr auto isValidFov = [](const int fov) -> bool {

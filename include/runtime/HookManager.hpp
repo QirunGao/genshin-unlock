@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,7 @@ public:
 private:
     std::vector<HookEntry> hooks;
     StateChangeCallback stateChangeCallback;
+    mutable std::mutex mutex;
 };
 
 } // namespace z3lx::runtime

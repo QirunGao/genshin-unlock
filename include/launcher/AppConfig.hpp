@@ -8,6 +8,9 @@
 
 namespace z3lx::launcher {
 
+using z3lx::shared::LauncherConfig;
+using z3lx::shared::RuntimeConfig;
+
 LauncherConfig ReadLauncherConfig(const std::filesystem::path& configFilePath);
 RuntimeConfig ReadRuntimeConfig(const std::filesystem::path& configFilePath);
 
@@ -18,7 +21,5 @@ void WriteLauncherConfig(
 void WriteRuntimeConfig(
     const std::filesystem::path& configFilePath,
     const RuntimeConfig& config);
-
-using namespace z3lx::shared;
 
 } // namespace z3lx::launcher

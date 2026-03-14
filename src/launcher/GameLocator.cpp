@@ -1,6 +1,8 @@
 #include "launcher/GameLocator.hpp"
 #include "common/Constants.hpp"
 
+#include <Windows.h>
+
 #include <wil/registry.h>
 #include <wil/resource.h>
 #include <wil/result.h>

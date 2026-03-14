@@ -20,8 +20,11 @@ public:
     StatusCode WaitForConnection(uint32_t timeoutMs = 10000);
     StatusCode ReceiveHello(HelloMessage& msg);
     StatusCode SendBootstrapReady(const BootstrapReadyMessage& msg);
+    StatusCode ReceiveRuntimeLoadRequest(RuntimeLoadRequestMessage& request);
     StatusCode ReceiveConfigSnapshot(ConfigSnapshotMessage& config);
     StatusCode SendRuntimeInitResult(const RuntimeInitResultMessage& result);
+    StatusCode SendConfigApplyResult(const ConfigApplyResultMessage& result);
+    StatusCode SendControlPlaneReady(const ControlPlaneReadyMessage& result);
     StatusCode SendHeartbeat(const StatusHeartbeatMessage& heartbeat);
     StatusCode SendHookStateChanged(const HookStateChangedMessage& hookState);
     StatusCode SendError(const ErrorEventMessage& error);

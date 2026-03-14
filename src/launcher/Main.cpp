@@ -20,6 +20,8 @@
 #include <wil/result.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
@@ -40,10 +42,27 @@ using namespace z3lx::util;
 } // namespace z
 
 namespace {
+z::HandshakeClient* g_consoleHandshake = nullptr;
+HANDLE g_consoleProcess = nullptr;
+
+z::LogLevel ParseLogLevel(const std::string& value) noexcept {
+    std::string lower = value;
+    std::ranges::transform(lower, lower.begin(), [](const unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (lower == "trace") return z::LogLevel::Trace;
+    if (lower == "debug") return z::LogLevel::Debug;
+    if (lower == "warn" || lower == "warning") return z::LogLevel::Warning;
+    if (lower == "error") return z::LogLevel::Error;
+    if (lower == "fatal") return z::LogLevel::Fatal;
+    return z::LogLevel::Info;
+}
 
 z::ConfigSnapshotMessage BuildConfigSnapshot(
     const z::RuntimeConfig& runtimeConfig) {
     z::ConfigSnapshotMessage msg {};
+    msg.version = 1;
     msg.unlockFps = runtimeConfig.unlockFps ? 1u : 0u;
     msg.targetFps = runtimeConfig.targetFps;
     msg.autoThrottle = runtimeConfig.autoThrottle ? 1u : 0u;
@@ -54,12 +73,51 @@ z::ConfigSnapshotMessage BuildConfigSnapshot(
     msg.nextFovPresetKey = static_cast<uint8_t>(runtimeConfig.nextFovPresetKey);
     msg.prevFovPresetKey = static_cast<uint8_t>(runtimeConfig.prevFovPresetKey);
     msg.fovPresetCount = static_cast<uint32_t>(
-        std::min(runtimeConfig.fovPresets.size(),
-                 static_cast<size_t>(z::kMaxFovPresets)));
+        (std::min)(runtimeConfig.fovPresets.size(),
+                   static_cast<size_t>(z::kMaxFovPresets)));
     for (uint32_t i = 0; i < msg.fovPresetCount; ++i) {
         msg.fovPresets[i] = runtimeConfig.fovPresets[i];
     }
     return msg;
+}
+
+void LogRemoteRuntimeMessage(
+    z::Logger& logger, const z::LogEventMessage& msg) {
+    std::string text { msg.message };
+    if (msg.code != z::StatusCode::Ok || msg.systemError != 0) {
+        text = std::format(
+            "{} (code={}, sys={})",
+            text,
+            z::StatusCodeToString(msg.code),
+            msg.systemError
+        );
+    }
+    logger.Log(static_cast<z::LogLevel>(msg.level),
+        msg.moduleName, msg.phaseName, text);
+}
+
+BOOL WINAPI ConsoleControlHandler(const DWORD controlType) {
+    switch (controlType) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        if (g_consoleHandshake && g_consoleHandshake->IsConnected() &&
+            g_consoleProcess != nullptr) {
+            DWORD exitCode = STILL_ACTIVE;
+            if (GetExitCodeProcess(g_consoleProcess, &exitCode) &&
+                exitCode == STILL_ACTIVE) {
+                z::ShutdownRequestMessage shutdown {};
+                shutdown.graceful = 1;
+                g_consoleHandshake->SendShutdown(shutdown);
+                Sleep(200);
+            }
+        }
+        return FALSE;
+    default:
+        return FALSE;
+    }
 }
 
 } // namespace
@@ -74,12 +132,10 @@ int main() try {
         }
     };
     wil::SetResultLoggingCallback(loggingCallback);
-
-    z::Logger logger { z::LogLevel::Info };
+    SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);
 
     // Step 1: Read launcher configuration
     std::println(std::cout, "Reading configuration...");
-    logger.Info("launcher", "Reading launcher configuration");
     constexpr auto launcherConfigPath = L"launcher_config.json";
     constexpr auto runtimeConfigPath = L"runtime_config.json";
 
@@ -87,7 +143,6 @@ int main() try {
     try {
         launcherConfig = z::ReadLauncherConfig(launcherConfigPath);
     } catch (...) {
-        logger.Warn("launcher", "Failed to read launcher config, using defaults");
         const z::MessageBoxResult result = z::ShowMessageBox(
             "Launcher",
             "Failed to read configuration file.\n"
@@ -100,6 +155,14 @@ int main() try {
         }
         z::WriteLauncherConfig(launcherConfigPath, launcherConfig);
     }
+
+    const fs::path currentModulePath = z::GetCurrentModuleFilePath();
+    const fs::path launcherDir = currentModulePath.parent_path();
+    z::Logger logger { ParseLogLevel(launcherConfig.logLevel) };
+    std::error_code logDirError {};
+    fs::create_directories(launcherDir / L"logs", logDirError);
+    logger.SetLogFile(launcherDir / L"logs" / L"launcher.log");
+    logger.Info("launcher", "Reading launcher configuration");
 
     z::RuntimeConfig runtimeConfig {};
     try {
@@ -141,9 +204,12 @@ int main() try {
 
     // Step 3: Validate self-module signatures/hashes
     logger.Info("launcher", "Validating module integrity");
-    const fs::path launcherDir = z::GetCurrentModuleFilePath().parent_path();
+    const fs::path hashManifestPath = launcherDir / L"module_hashes.json";
+    const z::ModuleHashManifest hashManifest =
+        z::ReadModuleHashManifest(hashManifestPath);
     const fs::path bootstrapPath = launcherDir / L"bootstrap.dll";
     const fs::path runtimePath = launcherDir / L"runtime.dll";
+    const fs::path launcherPath = launcherDir / L"launcher.exe";
 
     if (!fs::exists(bootstrapPath)) {
         logger.Error("launcher", "bootstrap.dll not found");
@@ -166,35 +232,18 @@ int main() try {
         return 1;
     }
 
-    // Hash-based integrity check (dev phase — log hashes, reject on mismatch
-    // if expected hashes are configured).
+    // Hash-based integrity check (fail-closed).
     {
-        const std::string bootstrapHash =
-            z::ComputeFileSha256(bootstrapPath);
-        const std::string runtimeHash =
-            z::ComputeFileSha256(runtimePath);
-        logger.Info("launcher", std::format(
-            "bootstrap.dll SHA-256: {}", bootstrapHash));
-        logger.Info("launcher", std::format(
-            "runtime.dll   SHA-256: {}", runtimeHash));
-
-        if (bootstrapHash.empty()) {
-            logger.Error("launcher",
-                "Failed to compute bootstrap.dll hash");
+        if (z::ValidateModuleHash(launcherPath, hashManifest.launcherSha256)
+                != z::StatusCode::Ok ||
+            z::ValidateModuleHash(bootstrapPath, hashManifest.bootstrapSha256)
+                != z::StatusCode::Ok ||
+            z::ValidateModuleHash(runtimePath, hashManifest.runtimeSha256)
+                != z::StatusCode::Ok) {
+            logger.Error("launcher", "Module integrity check failed");
             z::ShowMessageBox(
                 "Launcher",
-                "Module integrity check failed for bootstrap.dll.",
-                z::MessageBoxIcon::Error,
-                z::MessageBoxButton::Ok
-            );
-            return 1;
-        }
-        if (runtimeHash.empty()) {
-            logger.Error("launcher",
-                "Failed to compute runtime.dll hash");
-            z::ShowMessageBox(
-                "Launcher",
-                "Module integrity check failed for runtime.dll.",
+                "Module integrity validation failed.",
                 z::MessageBoxIcon::Error,
                 z::MessageBoxButton::Ok
             );
@@ -206,11 +255,10 @@ int main() try {
     std::println(std::cout, "Checking compatibility...");
     logger.Info("launcher", "Checking version compatibility");
     const z::VersionTable versionTable = z::MakeDefaultVersionTable();
-    const z::Version toolVersion = z::GetFileVersion(
-        z::GetCurrentModuleFilePath()
-    );
+    const z::Version toolVersion = z::GetFileVersion(currentModulePath);
+    z::Version gameVersion {};
     try {
-        const z::Version gameVersion = z::ReadGameVersion(launcherConfig.gamePath);
+        gameVersion = z::ReadGameVersion(launcherConfig.gamePath);
         z::CheckVersionCompatibility(toolVersion, gameVersion, versionTable);
     } catch (const std::exception& e) {
         const z::MessageBoxResult result = z::ShowMessageBox(
@@ -287,11 +335,15 @@ int main() try {
 
     // Send Hello
     z::HelloMessage hello {};
+    hello.session.sessionId = ctx.processId;
     hello.session.launcherPid = GetCurrentProcessId();
     hello.session.gamePid = ctx.processId;
     z::CopyToFixedString(hello.session.toolVersion,
         sizeof(hello.session.toolVersion),
         toolVersion.ToString().c_str());
+    z::CopyToFixedString(hello.session.gameVersion,
+        sizeof(hello.session.gameVersion),
+        gameVersion.ToString().c_str());
     hello.session.protocolVersion = z::kProtocolVersion;
     if (handshake.SendHello(hello) != z::StatusCode::Ok) {
         logger.Error("launcher", "Failed to send Hello");
@@ -307,13 +359,43 @@ int main() try {
         return 1;
     }
     if (bootstrapReady.status != z::StatusCode::Ok) {
-        logger.Error("launcher", std::format("Bootstrap reported error: {}",
-            z::StatusCodeToString(bootstrapReady.status)));
+        logger.Error("launcher", std::format(
+            "Bootstrap reported error: {} phase={} message={} sys={}",
+            z::StatusCodeToString(bootstrapReady.status),
+            bootstrapReady.phaseName,
+            bootstrapReady.message,
+            bootstrapReady.systemError));
         TerminateProcess(process.get(), 1);
+        z::ShowMessageBox(
+            "Launcher",
+            std::format(
+                "Bootstrap initialization failed: {}\nPhase: {}\nMessage: {}\nSystem error: {}",
+                z::StatusCodeToString(bootstrapReady.status),
+                bootstrapReady.phaseName,
+                bootstrapReady.message,
+                bootstrapReady.systemError),
+            z::MessageBoxIcon::Error,
+            z::MessageBoxButton::Ok
+        );
         return 1;
     }
     logger.Info("launcher", std::format("Host validated: {}",
         bootstrapReady.hostModuleName));
+
+    // Send runtime load request so bootstrap can validate the exact module
+    // and hash before loading runtime.dll.
+    z::RuntimeLoadRequestMessage loadRequest {};
+    z::CopyToFixedString(loadRequest.runtimePath,
+        sizeof(loadRequest.runtimePath),
+        runtimePath.string().c_str());
+    z::CopyToFixedString(loadRequest.runtimeSha256,
+        sizeof(loadRequest.runtimeSha256),
+        hashManifest.runtimeSha256.c_str());
+    if (handshake.SendRuntimeLoadRequest(loadRequest) != z::StatusCode::Ok) {
+        logger.Error("launcher", "Failed to send runtime load request");
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
 
     // Send config snapshot
     logger.Info("launcher", "Sending runtime configuration");
@@ -338,8 +420,12 @@ int main() try {
         TerminateProcess(process.get(), 1);
         z::ShowMessageBox(
             "Launcher",
-            std::format("Runtime initialization failed: {}",
-                z::StatusCodeToString(runtimeResult.status)),
+            std::format(
+                "Runtime initialization failed: {}\nPhase: {}\nMessage: {}\nSystem error: {}",
+                z::StatusCodeToString(runtimeResult.status),
+                runtimeResult.phaseName,
+                runtimeResult.message,
+                runtimeResult.systemError),
             z::MessageBoxIcon::Error,
             z::MessageBoxButton::Ok
         );
@@ -350,9 +436,50 @@ int main() try {
         runtimeResult.fpsAvailable ? "available" : "unavailable",
         runtimeResult.fovAvailable ? "available" : "unavailable"));
 
+    z::ConfigApplyResultMessage configApplyResult {};
+    if (handshake.WaitForConfigApplyResult(configApplyResult)
+            != z::StatusCode::Ok ||
+        configApplyResult.status != z::StatusCode::Ok ||
+        configApplyResult.configVersion != configMsg.version) {
+        logger.Error("launcher", "Failed to confirm config application");
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
+
+    z::ControlPlaneReadyMessage controlPlaneReady {};
+    if (handshake.WaitForControlPlaneReady(controlPlaneReady)
+            != z::StatusCode::Ok) {
+        logger.Error("launcher", "Failed to receive control-plane readiness");
+        TerminateProcess(process.get(), 1);
+        return 1;
+    }
+    if (controlPlaneReady.status != z::StatusCode::Ok) {
+        logger.Error("launcher", std::format(
+            "Control plane failed to start: {}",
+            z::StatusCodeToString(controlPlaneReady.status)));
+        TerminateProcess(process.get(), 1);
+        z::ShowMessageBox(
+            "Launcher",
+            std::format(
+                "Runtime control plane failed: {}\nPhase: {}\nMessage: {}\nSystem error: {}",
+                z::StatusCodeToString(controlPlaneReady.status),
+                controlPlaneReady.phaseName,
+                controlPlaneReady.message,
+                controlPlaneReady.systemError),
+            z::MessageBoxIcon::Error,
+            z::MessageBoxButton::Ok
+        );
+        return 1;
+    }
+    logger.Info("launcher", std::format(
+        "Control plane ready in state {}",
+        controlPlaneReady.runtimeState));
+
     // Step 9: Resume game main thread
     logger.Info("launcher", "Resuming game main thread");
     ResumeThread(thread.get());
+    g_consoleHandshake = &handshake;
+    g_consoleProcess = process.get();
 
     std::println(std::cout, "Game process started successfully");
     logger.Info("launcher", "Game process started successfully");
@@ -380,6 +507,18 @@ int main() try {
                     break;
                 }
                 switch (header.type) {
+                case z::MessageType::StateChanged: {
+                    z::StateChangedMessage stateMsg {};
+                    if (handshake.ReceiveStateChanged(stateMsg)
+                            == z::StatusCode::Ok) {
+                        logger.Info("runtime", std::format(
+                            "State changed: {} -> {} [{}]",
+                            stateMsg.previousState,
+                            stateMsg.currentState,
+                            stateMsg.phaseName));
+                    }
+                    break;
+                }
                 case z::MessageType::StatusHeartbeat: {
                     z::StatusHeartbeatMessage hb {};
                     if (handshake.ReceiveHeartbeat(hb)
@@ -402,13 +541,24 @@ int main() try {
                     }
                     break;
                 }
+                case z::MessageType::LogEvent: {
+                    z::LogEventMessage logMsg {};
+                    if (handshake.ReceiveLogEvent(logMsg)
+                            == z::StatusCode::Ok) {
+                        LogRemoteRuntimeMessage(logger, logMsg);
+                    }
+                    break;
+                }
                 case z::MessageType::ErrorEvent: {
                     z::ErrorEventMessage errMsg {};
                     if (handshake.ReceiveError(errMsg)
                             == z::StatusCode::Ok) {
                         logger.Error("runtime", std::format(
-                            "Error in '{}': {} (sys={})",
-                            errMsg.moduleName, errMsg.message,
+                            "Error in '{}' [{}]: {} (code={}, sys={})",
+                            errMsg.moduleName,
+                            errMsg.phaseName,
+                            errMsg.message,
+                            z::StatusCodeToString(errMsg.code),
                             errMsg.systemError));
                     }
                     break;
@@ -421,6 +571,8 @@ int main() try {
         }
     }
 
+    g_consoleHandshake = nullptr;
+    g_consoleProcess = nullptr;
     handshake.Disconnect();
     return 0;
 } catch (const std::exception& e) {

@@ -127,6 +127,11 @@ StatusCode IpcServer::SendBootstrapReady(const BootstrapReadyMessage& msg) {
     return SendPayload(MessageType::BootstrapReady, msg);
 }
 
+StatusCode IpcServer::ReceiveRuntimeLoadRequest(
+    RuntimeLoadRequestMessage& request) {
+    return ReceivePayload(MessageType::RuntimeLoadRequest, request);
+}
+
 StatusCode IpcServer::ReceiveConfigSnapshot(ConfigSnapshotMessage& config) {
     return ReceivePayload(MessageType::ConfigSnapshot, config);
 }
@@ -134,6 +139,16 @@ StatusCode IpcServer::ReceiveConfigSnapshot(ConfigSnapshotMessage& config) {
 StatusCode IpcServer::SendRuntimeInitResult(
     const RuntimeInitResultMessage& result) {
     return SendPayload(MessageType::RuntimeInitResult, result);
+}
+
+StatusCode IpcServer::SendConfigApplyResult(
+    const ConfigApplyResultMessage& result) {
+    return SendPayload(MessageType::ConfigApplyResult, result);
+}
+
+StatusCode IpcServer::SendControlPlaneReady(
+    const ControlPlaneReadyMessage& result) {
+    return SendPayload(MessageType::ControlPlaneReady, result);
 }
 
 StatusCode IpcServer::SendHeartbeat(

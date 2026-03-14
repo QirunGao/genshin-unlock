@@ -25,9 +25,20 @@ Logger::~Logger() noexcept {
 }
 
 void Logger::SetLogFile(const std::filesystem::path& logFilePath) {
-    const wil::unique_hfile handle = wil::open_or_truncate_existing_file(
-        logFilePath.native().c_str());
-    fileHandle = handle.release();
+    if (fileHandle != INVALID_HANDLE_VALUE) {
+        CloseHandle(fileHandle);
+        fileHandle = INVALID_HANDLE_VALUE;
+    }
+
+    fileHandle = CreateFileW(
+        logFilePath.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        nullptr,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
 }
 
 void Logger::Log(const LogLevel level, const std::string_view module,

@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 - 與遊戲內序列化視野變化整合（例如爆發、過場動畫）
 - 透過鍵位綁定快速切換視角解鎖狀態及預設模式
 - 自訂遊戲啟動參數和顯示設定
-- 相容[GIMI](https://github.com/SilentNightSound/GI-Model-Importer)及相關模組
+- 使用專用的 `launcher.exe -> bootstrap.dll -> runtime.dll` 鏈路，並在啟動階段執行 fail-closed 驗證
 - 不完全相容於PC手把佈局
 
 ## 免責聲明
@@ -31,29 +31,24 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 由於該模組的實現方式，可能被殺毒軟體誤報為病毒。若在安裝過程中遇到此類問題，請考慮將模組新增至防毒軟體的例外清單。
 
 1. 從 [最新版本](https://github.com/z3lx/genshin-unlock/releases/latest) 下載 `mod.zip` 並解壓
-2. 執行解壓縮後的資料夾中的 `loader.exe`
-3. 等待遊戲啟動
-4. （可選）透過編輯設定檔調整模組行為
+2. 將 `launcher.exe`、`bootstrap.dll`、`runtime.dll` 和 `module_hashes.json` 保持在同一個資料夾
+3. （可選）透過編輯 `launcher_config.json` 和 `runtime_config.json` 調整模組行為
+4. 執行 `launcher.exe`
+5. 等待遊戲啟動
 
 模組在遊戲中啟動後：
 - 使用 <kbd>←</kbd> 和 <kbd>→</kbd> 鍵循環切換 FOV 預設
 - 使用 <kbd>↓</kbd> 鍵切換 FOV 解鎖狀態
 
-與 [GIMI](https://github.com/SilentNightSound/GI-Model-Importer) 搭配使用：
-1. 使用文字編輯器開啟 `loader_config.json` 文件
-2. 將 GIMI 的 `d3d11.dll` 路徑加入 `dllPaths` 陣列中
-```json
-"dllPaths": [
-    "plugin.dll",
-    "C:\\path\\to\\GIMI\\d3d11.dll"
-],
-```
+啟動器預設會將日誌寫入 `logs/launcher.log`。當 `closeLauncherOnSuccess` 為 `false` 時，啟動器會持續駐留，用來監控執行階段狀態、心跳、Hook 狀態變化與關閉流程。
+
+目前的架構已不再支援任意 `dllPaths` 注入。啟動器只會在驗證雜湊後，從自身資料夾載入隨附的 `bootstrap.dll` 與 `runtime.dll`。
 
 ## 配置
 
-模組的行為可透過 `loader_config.json` 和 `plugin_config.json` 檔案進行自訂，具體如下。
+模組的行為可透過 `launcher_config.json` 和 `runtime_config.json` 檔案進行自訂，具體如下。
 
-### 載入器
+### 啟動器
 
 | 鍵                | 類型         | 描述                     |
 |------------------|------------|------------------------|
@@ -65,8 +60,8 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 | `screenHeight`   | `int`      | 遊戲視窗的高度（以像素為單位）        |
 | `mobilePlatform` | `bool`     | 啟用行動裝置 UI              |
 | `additionalArgs` | `string`   | 傳遞給遊戲執行檔的額外參數          |
-| `dllPaths`       | `string[]` | 要注入到遊戲中的 DLL 檔案清單      |
-| `suspendLoad`    | `bool`     | 暫停遊戲進程直至模組完全載入         |
+| `closeLauncherOnSuccess` | `bool` | 啟動成功後立即關閉啟動器，而不是繼續監控執行階段 |
+| `logLevel`       | `string`   | 啟動器的最小日誌等級：`trace`、`debug`、`info`、`warn`、`error`、`fatal` |
 
 <details>
 
@@ -80,7 +75,7 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 
 </details>
 
-預設載入器配置：
+預設啟動器配置：
 
 ```json
 {
@@ -92,19 +87,17 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
     "screenHeight": 1080,
     "mobilePlatform": false,
     "additionalArgs": "",
-    "dllPaths": [
-        "plugin.dll"
-    ],
-    "suspendLoad": false
+    "closeLauncherOnSuccess": false,
+    "logLevel": "info"
 }
 ```
 
-### 插件
+### 執行階段
 
 | 鍵                  | 類型       | 描述                     |
 |--------------------|----------|------------------------|
 | `unlockFps`        | `bool`   | 啟用幀率（FPS）解鎖            |
-| `targetFps`        | `int`    | 解鎖幀率時的目標幀率             |
+| `targetFps`        | `int`    | 解鎖幀率時的目標幀率，`-1` 表示不設上限 |
 | `autoThrottle`     | `bool`   | 當外掛程式未被聚焦時限制幀率並降低進程優先權 |
 | `unlockFov`        | `bool`   | 啟用視野角（FOV）解鎖           |
 | `targetFov`        | `int`    | 啟動時套用的預設FOV            |
@@ -251,7 +244,7 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 
 </details>
 
-預設插件配置：
+預設執行階段配置：
 
 ```json
 {

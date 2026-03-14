@@ -9,6 +9,7 @@ namespace z3lx::shared {
 enum class StatusCode : uint32_t {
     Ok = 0,
     ConfigInvalid,
+    ProtocolMismatch,
     GameNotFound,
     GameVersionUnsupported,
     ModuleSignatureInvalid,
@@ -33,6 +34,7 @@ constexpr std::string_view StatusCodeToString(const StatusCode code) noexcept {
     switch (code) {
     case StatusCode::Ok:                       return "Ok";
     case StatusCode::ConfigInvalid:            return "ConfigInvalid";
+    case StatusCode::ProtocolMismatch:         return "ProtocolMismatch";
     case StatusCode::GameNotFound:             return "GameNotFound";
     case StatusCode::GameVersionUnsupported:   return "GameVersionUnsupported";
     case StatusCode::ModuleSignatureInvalid:   return "ModuleSignatureInvalid";

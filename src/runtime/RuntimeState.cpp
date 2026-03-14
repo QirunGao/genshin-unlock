@@ -8,10 +8,11 @@ RuntimeState::RuntimeState() noexcept
 RuntimeState::~RuntimeState() noexcept = default;
 
 State RuntimeState::GetState() const noexcept {
-    return currentState;
+    return currentState.load();
 }
 
 bool RuntimeState::CanTransitionTo(const State newState) const noexcept {
+    const State current = currentState.load();
     // Allow transitions according to the state machine:
     // Created -> HostValidated -> IpcReady -> ConfigReady ->
     // SymbolsResolved -> HooksInstalled -> Running
@@ -22,18 +23,18 @@ bool RuntimeState::CanTransitionTo(const State newState) const noexcept {
     case State::Fatal:
         return true;
     case State::HostValidated:
-        return currentState == State::Created;
+        return current == State::Created;
     case State::IpcReady:
-        return currentState == State::HostValidated;
+        return current == State::HostValidated;
     case State::ConfigReady:
-        return currentState == State::IpcReady ||
-               currentState == State::HostValidated;
+        return current == State::IpcReady ||
+               current == State::HostValidated;
     case State::SymbolsResolved:
-        return currentState == State::ConfigReady;
+        return current == State::ConfigReady;
     case State::HooksInstalled:
-        return currentState == State::SymbolsResolved;
+        return current == State::SymbolsResolved;
     case State::Running:
-        return currentState == State::HooksInstalled;
+        return current == State::HooksInstalled;
     default:
         return false;
     }
@@ -43,13 +44,14 @@ bool RuntimeState::TransitionTo(const State newState) noexcept {
     if (!CanTransitionTo(newState)) {
         return false;
     }
-    currentState = newState;
+    currentState.store(newState);
     return true;
 }
 
 bool RuntimeState::IsTerminal() const noexcept {
-    return currentState == State::Shutdown ||
-           currentState == State::Fatal;
+    const State current = currentState.load();
+    return current == State::Shutdown ||
+           current == State::Fatal;
 }
 
 } // namespace z3lx::runtime

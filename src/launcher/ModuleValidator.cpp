@@ -1,14 +1,29 @@
 #include "launcher/ModuleValidator.hpp"
 
+#include <glaze/glaze.hpp>
+
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include <Windows.h>
 #include <bcrypt.h>
 #pragma comment(lib, "bcrypt.lib")
+
+template <>
+struct glz::meta<z3lx::launcher::ModuleHashManifest> {
+    using T = z3lx::launcher::ModuleHashManifest;
+    static constexpr auto value = object(
+        "launcherSha256", &T::launcherSha256,
+        "bootstrapSha256", &T::bootstrapSha256,
+        "runtimeSha256", &T::runtimeSha256
+    );
+};
 
 namespace z3lx::launcher {
 
@@ -110,8 +125,7 @@ StatusCode ValidateModuleHash(
     }
 
     if (expectedSha256Hex.empty()) {
-        // No expected hash provided — caller is in logging-only mode.
-        return StatusCode::Ok;
+        return StatusCode::ModuleSignatureInvalid;
     }
 
     if (actual != expectedSha256Hex) {
@@ -119,6 +133,35 @@ StatusCode ValidateModuleHash(
     }
 
     return StatusCode::Ok;
+}
+
+ModuleHashManifest ReadModuleHashManifest(
+    const std::filesystem::path& manifestPath) {
+    if (!std::filesystem::exists(manifestPath)) {
+        throw std::runtime_error(std::format(
+            "Hash manifest not found: {}", manifestPath.string()));
+    }
+
+    std::ifstream input { manifestPath, std::ios::binary };
+    if (!input) {
+        throw std::runtime_error(std::format(
+            "Failed to open hash manifest: {}", manifestPath.string()));
+    }
+
+    const std::string content {
+        std::istreambuf_iterator<char> { input },
+        std::istreambuf_iterator<char> {}
+    };
+
+    ModuleHashManifest manifest {};
+    const auto error = glz::read_json(manifest, content);
+    if (error) {
+        throw std::runtime_error(std::format(
+            "Failed to parse hash manifest: {}",
+            glz::format_error(error, content)));
+    }
+
+    return manifest;
 }
 
 } // namespace z3lx::launcher

@@ -13,6 +13,18 @@ using namespace z3lx::shared;
 
 class FovService {
 public:
+    struct FovRuntimeState {
+        bool available = false;
+        bool enabled = false;
+        bool hooked = false;
+        bool enabledOnce = false;
+        int targetFov = 45;
+        int setFovCount = 0;
+        void* previousInstance = nullptr;
+        float previousFov = 45.0f;
+        bool isPreviousFov = false;
+    };
+
     FovService() noexcept;
     ~FovService() noexcept;
 
@@ -22,6 +34,7 @@ public:
     FovService& operator=(const FovService&) = delete;
 
     StatusCode Initialize(void* fovTarget);
+    void Shutdown() noexcept;
 
     void SetEnabled(bool enabled) noexcept;
     void SetTargetFov(int fov) noexcept;
@@ -38,19 +51,16 @@ public:
     void HandleHookCallback(void* instance, float& value) noexcept;
 
 private:
-    bool available = false;
-    bool enabled = false;
-    bool hooked = false;
-    bool enabledOnce = false;
-    int targetFov = 45;
+    struct Impl;
 
-    int setFovCount = 0;
-    void* previousInstance = nullptr;
-    float previousFov = 45.0f;
-    bool isPreviousFov = false;
+    static void SetActiveInstance(FovService* service) noexcept;
+    static FovService* GetActiveInstance() noexcept;
+    static void HookCallback(void* instance, float value) noexcept;
 
+    FovRuntimeState state {};
     util::ExponentialFilter<float> filter {};
-    std::unique_ptr<std::mutex> mutex;
+    mutable std::unique_ptr<std::mutex> stateMutex;
+    std::unique_ptr<Impl> impl;
 };
 
 } // namespace z3lx::runtime

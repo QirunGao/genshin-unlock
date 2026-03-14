@@ -19,15 +19,20 @@ public:
     StatusCode Connect(uint32_t timeoutMs = 10000);
     StatusCode SendHello(const HelloMessage& msg);
     StatusCode WaitForBootstrapReady(BootstrapReadyMessage& response, uint32_t timeoutMs = 10000);
+    StatusCode SendRuntimeLoadRequest(const RuntimeLoadRequestMessage& request);
     StatusCode SendConfigSnapshot(const ConfigSnapshotMessage& config);
     StatusCode WaitForRuntimeInitResult(RuntimeInitResultMessage& response, uint32_t timeoutMs = 10000);
+    StatusCode WaitForConfigApplyResult(ConfigApplyResultMessage& response, uint32_t timeoutMs = 10000);
+    StatusCode WaitForControlPlaneReady(ControlPlaneReadyMessage& response, uint32_t timeoutMs = 10000);
     StatusCode SendShutdown(const ShutdownRequestMessage& msg);
 
     // Runtime event receiving (monitoring phase)
     bool HasPendingData() const noexcept;
     StatusCode PeekMessageHeader(MessageHeader& header);
     StatusCode ReceiveHeartbeat(StatusHeartbeatMessage& msg);
+    StatusCode ReceiveStateChanged(StateChangedMessage& msg);
     StatusCode ReceiveHookStateChanged(HookStateChangedMessage& msg);
+    StatusCode ReceiveLogEvent(LogEventMessage& msg);
     StatusCode ReceiveError(ErrorEventMessage& msg);
 
     [[nodiscard]] bool IsConnected() const noexcept;
@@ -39,6 +44,10 @@ private:
 
     template <typename T>
     StatusCode ReceivePayload(MessageType expectedType, T& payload);
+
+    template <typename T>
+    StatusCode ReceivePayloadWithTimeout(
+        MessageType expectedType, T& payload, uint32_t timeoutMs);
 
     uint32_t gamePid;
     HANDLE pipeHandle = INVALID_HANDLE_VALUE;
