@@ -11,6 +11,7 @@ endif()
 
 add_compile_options(
     /permissive-
+    /EHsc
     /utf-8
     "$<$<CONFIG:Release>:/GL>"
     "$<$<CONFIG:Release>:/Gw>"
@@ -71,11 +72,25 @@ set(LOADER_RESOURCE ${RESOURCES_DIR}/loader.rc)
 add_executable(loader ${LOADER_SOURCES} ${LOADER_RESOURCE})
 target_include_directories(loader PRIVATE include)
 target_link_libraries(loader
+    PRIVATE bcrypt
     PRIVATE glaze::glaze
     PRIVATE WIL::WIL
     PRIVATE util
 )
-target_link_options(loader PRIVATE
+
+set(HELPER_SOURCES
+    src/helper/Main.cpp
+    src/loader/HelperProtocol.cpp
+)
+set(HELPER_RESOURCE ${RESOURCES_DIR}/loader.rc)
+add_executable(helper ${HELPER_SOURCES} ${HELPER_RESOURCE})
+target_include_directories(helper PRIVATE include)
+target_link_libraries(helper
+    PRIVATE glaze::glaze
+    PRIVATE WIL::WIL
+    PRIVATE util
+)
+target_link_options(helper PRIVATE
     /MANIFESTUAC:level='requireAdministrator'
 )
 

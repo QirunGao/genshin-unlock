@@ -1,10 +1,13 @@
 #include "common/Constants.hpp"
 #include "loader/Config.hpp"
+#include "loader/HelperProtocol.hpp"
+#include "loader/LaunchRequest.hpp"
 #include "util/Type.hpp"
 #include "util/Version.hpp"
 #include "util/win/Dialogue.hpp"
 #include "util/win/File.hpp"
 #include "util/win/Loader.hpp"
+#include "util/win/PipeMessage.hpp"
 #include "util/win/Shell.hpp"
 #include "util/win/String.hpp"
 #include "util/win/Version.hpp"
@@ -27,6 +30,7 @@
 #include <print>
 #include <ranges>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -34,6 +38,8 @@
 #include <vector>
 
 #include <Windows.h>
+#include <bcrypt.h>
+#include <shellapi.h>
 
 namespace fs = std::filesystem;
 namespace z {
@@ -179,7 +185,78 @@ void CheckCompatibility(
     }
 }
 
-void StartGame(const z::Config& config) {
+std::wstring GetPipeName() {
+    return std::format(
+        LR"(\\.\pipe\genshin-unlock-{}-{}-{})",
+        GetCurrentProcessId(),
+        GetCurrentThreadId(),
+        GetTickCount64()
+    );
+}
+
+wil::unique_hfile CreatePipe(const std::wstring& pipeName) {
+    HANDLE pipeHandle = CreateNamedPipeW(
+        pipeName.c_str(),
+        PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
+        1,
+        64 * 1024,
+        64 * 1024,
+        0,
+        nullptr
+    );
+    THROW_LAST_ERROR_IF(pipeHandle == INVALID_HANDLE_VALUE);
+    return wil::unique_hfile { pipeHandle };
+}
+
+void WaitForPipeConnection(
+    const HANDLE pipe,
+    const HANDLE helperProcess,
+    const std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (true) {
+        const BOOL connected = ConnectNamedPipe(pipe, nullptr);
+        const DWORD error = GetLastError();
+        if (connected || error == ERROR_PIPE_CONNECTED) {
+            DWORD mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+            THROW_IF_WIN32_BOOL_FALSE(SetNamedPipeHandleState(
+                pipe,
+                &mode,
+                nullptr,
+                nullptr
+            ));
+            return;
+        }
+        THROW_WIN32_IF(error, error != ERROR_PIPE_LISTENING);
+
+        THROW_WIN32_IF(
+            ERROR_BROKEN_PIPE,
+            WaitForSingleObject(helperProcess, 0) == WAIT_OBJECT_0
+        );
+        THROW_WIN32_IF(
+            WAIT_TIMEOUT,
+            std::chrono::steady_clock::now() >= deadline
+        );
+        std::this_thread::sleep_for(std::chrono::milliseconds { 50 });
+    }
+}
+
+uint64_t CreateNonce() {
+    uint64_t nonce = 0;
+    THROW_IF_NTSTATUS_FAILED(BCryptGenRandom(
+        nullptr,
+        reinterpret_cast<PUCHAR>(&nonce),
+        sizeof(nonce),
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG
+    ));
+    return nonce;
+}
+
+std::wstring FormatNonce(const uint64_t nonce) {
+    return std::format(L"{:016X}", nonce);
+}
+
+z::LaunchRequest CreateLaunchRequest(const z::Config& config) {
     std::wstring args = [&config] {
         if (!config.overrideArgs) {
             return std::wstring {};
@@ -217,26 +294,57 @@ void StartGame(const z::Config& config) {
         );
     }();
 
-    STARTUPINFOW si { .cb = sizeof(si) };
-    PROCESS_INFORMATION pi {};
-    THROW_IF_WIN32_BOOL_FALSE(CreateProcessW(
-        config.gamePath.c_str(),
-        args.data(),
-        nullptr,
-        nullptr,
-        FALSE,
-        config.suspendLoad ? CREATE_SUSPENDED : 0,
-        nullptr,
-        config.gamePath.parent_path().c_str(),
-        &si,
-        &pi
-    ));
-    const wil::unique_handle process { pi.hProcess };
-    const wil::unique_handle thread { pi.hThread };
+    z::LaunchRequest request {
+        .gamePath = config.gamePath,
+        .workingDirectory = config.gamePath.parent_path(),
+        .dllPaths = config.dllPaths,
+        .suspendLoad = config.suspendLoad
+    };
+    z::U16ToU8(args, request.args);
+    return request;
+}
 
-    z::LoadRemoteLibrary(process.get(), config.dllPaths);
-    if (config.suspendLoad) {
-        ResumeThread(thread.get());
+void RunPrivilegedHelper(const z::LaunchRequest& launchRequest) {
+    const std::filesystem::path currentPath =
+        z::GetCurrentModuleFilePath().parent_path();
+    const std::filesystem::path helperPath = currentPath / "helper.exe";
+    const std::wstring pipeName = GetPipeName();
+    const uint64_t nonce = CreateNonce();
+    const std::wstring nonceText = FormatNonce(nonce);
+    const std::wstring parameters = std::format(L"{} {}", pipeName, nonceText);
+    const wil::unique_hfile pipe = CreatePipe(pipeName);
+
+    SHELLEXECUTEINFOW sei {
+        .cbSize = sizeof(sei),
+        .fMask = SEE_MASK_NOCLOSEPROCESS,
+        .lpVerb = L"runas",
+        .lpFile = helperPath.c_str(),
+        .lpParameters = parameters.c_str(),
+        .lpDirectory = currentPath.c_str(),
+        .nShow = SW_SHOWNORMAL
+    };
+    THROW_IF_WIN32_BOOL_FALSE(ShellExecuteExW(&sei));
+    const wil::unique_handle helperProcess { sei.hProcess };
+
+    WaitForPipeConnection(
+        pipe.get(),
+        helperProcess.get(),
+        std::chrono::seconds { 30 }
+    );
+
+    const z::HelperRequest helperRequest {
+        .nonce = nonce,
+        .launchRequest = launchRequest
+    };
+    std::vector<uint8_t> request {};
+    helperRequest.Serialize(request);
+    z::WritePipeMessage(pipe.get(), request);
+
+    const std::vector<uint8_t> response = z::ReadPipeMessage(pipe.get());
+    if (!response.empty()) {
+        throw std::runtime_error {
+            std::string { response.begin(), response.end() }
+        };
     }
 }
 } // namespace
@@ -335,7 +443,7 @@ int main() try {
     }
 
     std::println(std::cout, "Starting game process...");
-    StartGame(config);
+    RunPrivilegedHelper(CreateLaunchRequest(config));
     std::println(std::cout, "Game process started successfully");
     std::this_thread::sleep_for(std::chrono::seconds { 1 });
 
