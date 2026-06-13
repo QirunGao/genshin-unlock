@@ -19,7 +19,6 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 - 与游戏内序列化视野变化集成（例如爆发、过场动画）
 - 通过键位绑定快速切换视角解锁状态及预设模式
 - 自定义游戏启动参数和显示设置
-- 兼容[GIMI](https://github.com/SilentNightSound/GI-Model-Importer)及相关模组
 - 不完全兼容PC手柄布局
 
 ## 免责声明
@@ -30,24 +29,14 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 
 由于该模组的实现方式，可能被杀毒软件误报为病毒。若在安装过程中遇到此类问题，请考虑将模组添加至杀毒软件的例外列表。
 
-1. 从 [最新版本](https://github.com/z3lx/genshin-unlock/releases/latest) 下载 `mod.zip` 并解压
-2. 运行解压后的文件夹中的 `loader.exe`
+1. 从 [最新版本](https://github.com/z3lx/genshin-unlock/releases/latest) 下载 `GenshinUnlock-<version>.zip` 并解压
+2. 运行解压后的文件夹中的 `GenshinUnlockLoader.exe`
 3. 等待游戏启动
 4. （可选）通过编辑配置文件调整模组行为
 
 模组在游戏中激活后：
 - 使用 <kbd>←</kbd> 和 <kbd>→</kbd> 键循环切换 FOV 预设
 - 使用 <kbd>↓</kbd> 键切换 FOV 解锁状态
-
-与 [GIMI](https://github.com/SilentNightSound/GI-Model-Importer) 配合使用：
-1. 使用文本编辑器打开 `loader_config.json` 文件
-2. 将 GIMI 的 `d3d11.dll` 路径添加到 `dllPaths` 数组中
-```json
-"dllPaths": [
-    "plugin.dll",
-    "C:\\path\\to\\GIMI\\d3d11.dll"
-],
-```
 
 ## 配置
 
@@ -65,8 +54,6 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 | `screenHeight`   | `int`      | 游戏窗口的高度（以像素为单位）         |
 | `mobilePlatform` | `bool`     | 启用移动端 UI                |
 | `additionalArgs` | `string`   | 传递给游戏可执行文件的额外参数         |
-| `dllPaths`       | `string[]` | 要注入到游戏中的 DLL 文件列表       |
-| `suspendLoad`    | `bool`     | 暂停游戏进程直至模组完全加载          |
 
 <details>
 
@@ -91,11 +78,7 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
     "screenWidth": 1920,
     "screenHeight": 1080,
     "mobilePlatform": false,
-    "additionalArgs": "",
-    "dllPaths": [
-        "plugin.dll"
-    ],
-    "suspendLoad": false
+    "additionalArgs": ""
 }
 ```
 

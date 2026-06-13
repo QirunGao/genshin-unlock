@@ -17,7 +17,6 @@ https://github.com/user-attachments/assets/56a11762-ebd2-4093-8c1d-768f913bd063
 - Integrates with in-game sequenced FOV changes (e.g., bursts, cutscenes)
 - Uses keybindings to easily toggle FOV unlock and switch between presets
 - Customizable game launch arguments and display settings
-- Compatible with [GIMI](https://github.com/SilentNightSound/GI-Model-Importer) and associated mods
 - Not fully compatible with the PC controller layout
 
 ## Disclaimer
@@ -28,24 +27,14 @@ While I have used this mod since its conception without issues, it is important 
 
 Due to the nature of the mod's implementation, it may be flagged by antivirus software as a false positive. If you encounter such issues during the installation process, consider adding the mod to your antivirus's exclusion list.
 
-1. Download `mod.zip` from the [latest release](https://github.com/z3lx/genshin-unlock/releases/latest) and extract it
-2. Run `loader.exe` from the extracted folder
+1. Download `GenshinUnlock-<version>.zip` from the [latest release](https://github.com/z3lx/genshin-unlock/releases/latest) and extract it
+2. Run `GenshinUnlockLoader.exe` from the extracted folder
 3. Wait for the game to launch
 4. (Optional) Configure the mod's behavior by editing the configuration files
 
 Once the mod is active in-game:
 - Use the <kbd>←</kbd> and <kbd>→</kbd> keys to cycle through the FOV presets
 - Use the <kbd>↓</kbd> key to toggle the FOV unlocking
-
-To use the mod with [GIMI](https://github.com/SilentNightSound/GI-Model-Importer):
-1. Open the `loader_config.json` file with a text editor
-2. Add GIMI's `d3d11.dll` path to the `dllPaths` array
-```json
-"dllPaths": [
-    "plugin.dll",
-    "C:\\path\\to\\GIMI\\d3d11.dll"
-],
-```
 
 ## Configuration
 
@@ -63,8 +52,6 @@ The mod's behavior can optionally be customized through the `loader_config.json`
 | `screenHeight`   | `int`      | Height of the game window in pixels                     |
 | `mobilePlatform` | `bool`     | Enables mobile UI                                       |
 | `additionalArgs` | `string`   | Additional arguments to pass to the game executable     |
-| `dllPaths`       | `string[]` | List of DLLs to inject with the game                    |
-| `suspendLoad`    | `bool`     | Suspends the game process until the mod is fully loaded |
 
 <details>
 
@@ -89,11 +76,7 @@ Default loader configuration:
     "screenWidth": 1920,
     "screenHeight": 1080,
     "mobilePlatform": false,
-    "additionalArgs": "",
-    "dllPaths": [
-        "plugin.dll"
-    ],
-    "suspendLoad": false
+    "additionalArgs": ""
 }
 ```
 

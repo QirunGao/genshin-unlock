@@ -1,0 +1,7 @@
+file(SHA256 "${PLUGIN_PATH}" PLUGIN_HASH)
+string(TOUPPER "${PLUGIN_HASH}" PLUGIN_HASH)
+file(WRITE "${OUTPUT_PATH}" "#pragma once\n\n")
+file(APPEND "${OUTPUT_PATH}" "#include <string_view>\n\n")
+file(APPEND "${OUTPUT_PATH}" "namespace z3lx::common {\n")
+file(APPEND "${OUTPUT_PATH}" "inline constexpr std::string_view pluginHash = \"${PLUGIN_HASH}\";\n")
+file(APPEND "${OUTPUT_PATH}" "} // namespace z3lx::common\n")
