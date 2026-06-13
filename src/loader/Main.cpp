@@ -1,6 +1,6 @@
 #include "common/Constants.hpp"
 #include "loader/Config.hpp"
-#include "util/Type.hpp"
+#include "loader/LaunchPlan.hpp"
 #include "util/Version.hpp"
 #include "util/win/Dialogue.hpp"
 #include "util/win/File.hpp"
@@ -26,7 +26,6 @@
 #include <iostream>
 #include <print>
 #include <ranges>
-#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -34,6 +33,9 @@
 #include <vector>
 
 #include <Windows.h>
+#include <objbase.h>
+#include <sddl.h>
+#include <shellapi.h>
 
 namespace fs = std::filesystem;
 namespace z {
@@ -145,21 +147,9 @@ z::Config ReadConfig(
         onInvalidFilePath(&z::Config::gamePath, config.gamePath);
     }
 
-    for (fs::path& dllPath : config.dllPaths) {
-        if (!isValidFilePath(dllPath) ||
-            dllPath.extension() != L".dll") {
-            changed = true;
-            onInvalidFilePath(&z::Config::dllPaths, dllPath);
-        }
-    }
-
     if (changed) {
         config.Serialize(buffer);
         z::WriteFile(configFile.get(), buffer);
-    }
-
-    for (fs::path& dllPath : config.dllPaths) {
-        dllPath = fs::absolute(dllPath.make_preferred());
     }
 
     return config;
@@ -179,65 +169,145 @@ void CheckCompatibility(
     }
 }
 
-void StartGame(const z::Config& config) {
-    std::wstring args = [&config] {
-        if (!config.overrideArgs) {
-            return std::wstring {};
-        }
-
-        const wchar_t* modeArgs = [](const z::DisplayMode mode) {
-            switch (mode) {
-            case z::DisplayMode::Windowed:
-                return L"-screen-fullscreen 0";
-            case z::DisplayMode::Fullscreen:
-                return L"-screen-fullscreen 1 -window-mode exclusive";
-            case z::DisplayMode::Borderless:
-                return L"-popupwindow -screen-fullscreen 0";
-            default:
-                return L"";
-            }
-        }(config.displayMode);
-
-        const wchar_t* mobileArgs = config.mobilePlatform
-            ? L"use_mobile_platform -is_cloud 1 "
-                "-platform_type CLOUD_THIRD_PARTY_MOBILE"
-            : L"";
-
-        std::wstring additionalArgs {};
-        z::U8ToU16(config.additionalArgs, additionalArgs);
-
-        return std::format(
-            L"-monitor {} {} -screen-width {} -screen-height {} {} {} ",
-            config.monitorIndex,
-            modeArgs,
-            config.screenWidth,
-            config.screenHeight,
-            mobileArgs,
-            additionalArgs
-        );
-    }();
-
-    STARTUPINFOW si { .cb = sizeof(si) };
-    PROCESS_INFORMATION pi {};
-    THROW_IF_WIN32_BOOL_FALSE(CreateProcessW(
-        config.gamePath.c_str(),
-        args.data(),
-        nullptr,
-        nullptr,
-        FALSE,
-        config.suspendLoad ? CREATE_SUSPENDED : 0,
-        nullptr,
-        config.gamePath.parent_path().c_str(),
-        &si,
-        &pi
-    ));
-    const wil::unique_handle process { pi.hProcess };
-    const wil::unique_handle thread { pi.hThread };
-
-    z::LoadRemoteLibrary(process.get(), config.dllPaths);
-    if (config.suspendLoad) {
-        ResumeThread(thread.get());
+std::wstring CreateArgs(const z::Config& config) {
+    if (!config.overrideArgs) {
+        return {};
     }
+
+    const wchar_t* modeArgs = [](const z::DisplayMode mode) {
+        switch (mode) {
+        case z::DisplayMode::Windowed:
+            return L"-screen-fullscreen 0";
+        case z::DisplayMode::Fullscreen:
+            return L"-screen-fullscreen 1 -window-mode exclusive";
+        case z::DisplayMode::Borderless:
+            return L"-popupwindow -screen-fullscreen 0";
+        default:
+            return L"";
+        }
+    }(config.displayMode);
+
+    const wchar_t* mobileArgs = config.mobilePlatform
+        ? L"use_mobile_platform -is_cloud 1 "
+            "-platform_type CLOUD_THIRD_PARTY_MOBILE"
+        : L"";
+
+    std::wstring additionalArgs {};
+    z::U8ToU16(config.additionalArgs, additionalArgs);
+
+    return std::format(
+        L"-monitor {} {} -screen-width {} -screen-height {} {} {} ",
+        config.monitorIndex,
+        modeArgs,
+        config.screenWidth,
+        config.screenHeight,
+        mobileArgs,
+        additionalArgs
+    );
+}
+
+z::LaunchPlan CreateLaunchPlan(const z::Config& config) {
+    z::LaunchPlan plan {
+        .gamePath = config.gamePath,
+        .workingDirectory = config.gamePath.parent_path()
+    };
+    z::U16ToU8(CreateArgs(config), plan.args);
+    return plan;
+}
+
+std::wstring CreatePipeName() {
+    GUID guid {};
+    THROW_IF_FAILED(CoCreateGuid(&guid));
+
+    std::array<wchar_t, 39> guidString {};
+    THROW_HR_IF(E_FAIL, StringFromGUID2(
+        guid,
+        guidString.data(),
+        static_cast<int>(guidString.size())
+    ) == 0);
+    return std::format(LR"(\\.\pipe\genshin-unlock-{})", guidString.data());
+}
+
+PSECURITY_DESCRIPTOR CreatePipeSecurityDescriptor() {
+    constexpr auto sddl = L"D:P(A;;GA;;;OW)(A;;GA;;;BA)";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    THROW_IF_WIN32_BOOL_FALSE(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl,
+        SDDL_REVISION_1,
+        &descriptor,
+        nullptr
+    ));
+    return descriptor;
+}
+
+wil::unique_hfile CreateLaunchPlanPipe(const std::wstring& pipeName) {
+    PSECURITY_DESCRIPTOR descriptor = CreatePipeSecurityDescriptor();
+    const auto descriptorCleanup = wil::scope_exit([&] {
+        LocalFree(descriptor);
+    });
+
+    SECURITY_ATTRIBUTES securityAttributes {
+        .nLength = sizeof(securityAttributes),
+        .lpSecurityDescriptor = descriptor,
+        .bInheritHandle = FALSE
+    };
+
+    wil::unique_hfile pipe {
+        CreateNamedPipeW(
+            pipeName.c_str(),
+            PIPE_ACCESS_OUTBOUND,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+                PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            4096,
+            4096,
+            0,
+            &securityAttributes
+        )
+    };
+    THROW_LAST_ERROR_IF(!pipe);
+    return pipe;
+}
+
+void WriteLaunchPlan(const HANDLE pipe, const z::LaunchPlan& plan) {
+    std::vector<uint8_t> buffer {};
+    plan.Serialize(buffer);
+
+    const uint32_t bufferSize = static_cast<uint32_t>(buffer.size());
+    DWORD bytesWritten = 0;
+    THROW_IF_WIN32_BOOL_FALSE(::WriteFile(
+        pipe,
+        &bufferSize,
+        sizeof(bufferSize),
+        &bytesWritten,
+        nullptr
+    ));
+    THROW_IF_WIN32_BOOL_FALSE(::WriteFile(
+        pipe,
+        buffer.data(),
+        bufferSize,
+        &bytesWritten,
+        nullptr
+    ));
+}
+
+wil::unique_handle RunHelper(const std::wstring& pipeName) {
+    const std::filesystem::path currentPath =
+        z::GetCurrentModuleFilePath().parent_path();
+    const std::filesystem::path helperPath =
+        currentPath / "GenshinUnlockElevatedLauncher.exe";
+
+    SHELLEXECUTEINFOW sei {
+        .cbSize = sizeof(sei),
+        .fMask = SEE_MASK_NOCLOSEPROCESS,
+        .lpVerb = L"runas",
+        .lpFile = helperPath.c_str(),
+        .lpParameters = pipeName.c_str(),
+        .lpDirectory = currentPath.c_str(),
+        .nShow = SW_SHOWNORMAL
+    };
+    THROW_IF_WIN32_BOOL_FALSE(ShellExecuteExW(&sei));
+    return wil::unique_handle { sei.hProcess };
 }
 } // namespace
 
@@ -270,7 +340,7 @@ int main() try {
         }
         config = {};
     };
-    const auto onInvalidFilePath = [](auto member, fs::path& path) {
+    const auto onInvalidFilePath = [](auto, fs::path& path) {
         const z::MessageBoxResult result = z::ShowMessageBox(
             "Loader",
             std::format(
@@ -284,18 +354,11 @@ int main() try {
         if (result == z::MessageBoxResult::No) {
             std::exit(0);
         }
-        if (z::OffsetOf(member) == z::OffsetOf(&z::Config::gamePath)) {
-            constexpr z::Filter filters[] {
-                { z::osGameFileName, z::osGameFileName },
-                { z::cnGameFileName, z::cnGameFileName }
-            };
-            path = z::OpenFileDialogue(filters);
-        } else if (z::OffsetOf(member) == z::OffsetOf(&z::Config::dllPaths)) {
-            constexpr z::Filter filters[] {
-                { L"Dynamic Link Library (*.dll)", L"*.dll" }
-            };
-            path = z::OpenFileDialogue(filters);
-        }
+        constexpr z::Filter filters[] {
+            { z::osGameFileName, z::osGameFileName },
+            { z::cnGameFileName, z::cnGameFileName }
+        };
+        path = z::OpenFileDialogue(filters);
     };
     const z::Config config = ReadConfig(
         configFilePath,
@@ -334,9 +397,20 @@ int main() try {
         std::println(std::cout, "Failed to get game version, skipping check");
     }
 
-    std::println(std::cout, "Starting game process...");
-    StartGame(config);
-    std::println(std::cout, "Game process started successfully");
+    std::println(std::cout, "Creating launch pipe...");
+    const std::wstring pipeName = CreatePipeName();
+    const wil::unique_hfile pipe = CreateLaunchPlanPipe(pipeName);
+    std::println(std::cout, "Starting helper process...");
+    const wil::unique_handle helperProcess = RunHelper(pipeName);
+    if (!ConnectNamedPipe(pipe.get(), nullptr)) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_PIPE_CONNECTED) {
+            THROW_WIN32(error);
+        }
+    }
+    std::println(std::cout, "Writing launch plan...");
+    WriteLaunchPlan(pipe.get(), CreateLaunchPlan(config));
+    std::println(std::cout, "Helper process started successfully");
     std::this_thread::sleep_for(std::chrono::seconds { 1 });
 
     return 0;

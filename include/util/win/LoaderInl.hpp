@@ -25,53 +25,6 @@ void LoadRemoteLibrary(
         return;
     }
 
-    // Adjust privileges
-    LUID luid {};
-    THROW_IF_WIN32_BOOL_FALSE(LookupPrivilegeValueA(
-        nullptr,
-        "SeDebugPrivilege", // SE_DEBUG_NAME 20L
-        &luid
-    ));
-
-    wil::unique_handle token {};
-    THROW_IF_WIN32_BOOL_FALSE(OpenProcessToken(
-        GetCurrentProcess(),
-        TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-        token.put()
-    ));
-
-    TOKEN_PRIVILEGES newPrivileges {
-        .PrivilegeCount = 1,
-        .Privileges = {{
-            .Luid = luid,
-            .Attributes = SE_PRIVILEGE_ENABLED
-        }}
-    };
-    TOKEN_PRIVILEGES oldPrivileges {};
-    DWORD returnLength = 0;
-    THROW_IF_WIN32_BOOL_FALSE(AdjustTokenPrivileges(
-        token.get(),
-        FALSE,
-        &newPrivileges,
-        sizeof(newPrivileges),
-        &oldPrivileges,
-        &returnLength
-    ));
-    const auto privilegesCleanup = wil::scope_exit([&] {
-        AdjustTokenPrivileges(
-            token.get(),
-            FALSE,
-            &oldPrivileges,
-            returnLength,
-            nullptr,
-            nullptr
-        );
-    });
-    THROW_WIN32_IF(
-        ERROR_PRIVILEGE_NOT_HELD,
-        GetLastError() == ERROR_NOT_ALL_ASSIGNED
-    );
-
     // Get LoadLibraryW
     const HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
     THROW_LAST_ERROR_IF_NULL(kernel32);

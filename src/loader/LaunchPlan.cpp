@@ -1,19 +1,15 @@
-#include "loader/Config.hpp"
+#include "loader/LaunchPlan.hpp"
 
 #include <glaze/glaze.hpp>
 #include <glaze/glaze_exceptions.hpp>
 
-#include <cstdint>
-#include <filesystem>
 #include <vector>
-
-namespace fs = std::filesystem;
 
 namespace {
 constexpr glz::opts opts {
     .null_terminated = false,
     .comments = false,
-    .error_on_unknown_keys = false,
+    .error_on_unknown_keys = true,
     .skip_null_members = false,
     .prettify = true,
     .minified = false,
@@ -33,22 +29,12 @@ constexpr glz::opts opts {
 };
 } // namespace
 
-template <>
-struct glz::meta<z3lx::loader::DisplayMode> {
-    using enum z3lx::loader::DisplayMode;
-    static constexpr auto value = enumerate(
-        Windowed,
-        Fullscreen,
-        Borderless
-    );
-};
-
 namespace z3lx::loader {
-void Config::Serialize(std::vector<uint8_t>& buffer) {
+void LaunchPlan::Serialize(std::vector<uint8_t>& buffer) const {
     glz::ex::write<opts>(*this, buffer);
 }
 
-void Config::Deserialize(const std::vector<uint8_t>& buffer) {
+void LaunchPlan::Deserialize(const std::vector<uint8_t>& buffer) {
     glz::ex::read<opts>(*this, buffer);
 }
 } // namespace z3lx::loader
