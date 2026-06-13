@@ -22,11 +22,6 @@ struct Config {
     bool mobilePlatform = false;
     std::string additionalArgs {};
 
-    std::vector<std::filesystem::path> dllPaths {
-        "plugin.dll"
-    };
-    bool suspendLoad = false;
-
     void Serialize(std::vector<uint8_t>& buffer);
     void Deserialize(const std::vector<uint8_t>& buffer);
 };
